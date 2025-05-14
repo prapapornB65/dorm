@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'wallet/top_up_page.dart';
+import 'login/login.dart';
 import 'package:flutter_application_1/home/RoomOverviewPage.dart';
-
+import 'package:flutter_application_1/wallet/top_up_page.dart';
 
 class MainNavigationPage extends StatefulWidget {
   const MainNavigationPage({super.key});
@@ -11,13 +11,13 @@ class MainNavigationPage extends StatefulWidget {
 }
 
 class _MainNavigationPageState extends State<MainNavigationPage> {
-  int _currentIndex = 1;
+  int _currentIndex = 0;
 
   final List<Widget> _pages = [
-    const RoomOverviewPage(), // Home
-    const TopUpPage(),                              // Wallet
-    const Center(child: Text('🛠️ บริการ')),        // Service
-    const Center(child: Text('👤 โปรไฟล์')),        // Profile
+    const RoomOverviewPage(),      // หน้า Home
+    const TopUpPage(),             // หน้า Wallet
+    const Center(child: Text('🛠️ บริการ')),  // หน้า Service
+    const Center(child: Text('👤 โปรไฟล์')),  // หน้า Profile
   ];
 
   @override

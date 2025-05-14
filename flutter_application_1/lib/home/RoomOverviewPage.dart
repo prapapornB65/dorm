@@ -21,10 +21,10 @@ class _RoomOverviewPageState extends State<RoomOverviewPage> {
   }
 
   Future<void> fetchRoomOverview() async {
-    final url = Uri.parse('http://10.0.2.2:3000/api/room-overview/1'); // เปลี่ยน 1 เป็น id ที่ต้องการ
+  final uri = Uri.parse("http://10.0.2.2:3000/api/room-overview/1");
 
     try {
-      final res = await http.get(url);
+      final res = await http.get(uri);
       if (res.statusCode == 200) {
         setState(() {
           roomData = jsonDecode(res.body);

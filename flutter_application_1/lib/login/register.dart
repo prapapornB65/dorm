@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:fast_validator/fast_validator.dart'; // ✅ สำคัญ
+import 'package:form_field_validator/form_field_validator.dart';// ✅ สำคัญ
 import 'package:flutter_application_1/model/profile.dart';
 
 class RegScreen extends StatefulWidget {
