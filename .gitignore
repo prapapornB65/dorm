@@ -1,0 +1,66 @@
+# -------- Node / JS (root) --------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.eslintcache
+.cache/
+.tmp/
+dist/
+build/
+coverage/
+logs/
+*.log
+*.log.*
+.env
+.env.*
+!.env.example
+firebase-service-account*.json
+
+# อัปโหลด/ไฟล์รันไทม์
+uploads/
+!uploads/.gitkeep
+storage/
+!storage/.gitkeep
+
+# Docker / misc
+docker-data/
+*.pid
+
+# ตัวเลือก: ถ้าไม่ได้ใช้เป็น submodule/ไม่อยาก commit
+tuya-connector-nodejs/
+
+# -------- Flutter app (scoped by folder) --------
+flutter_application_1/.dart_tool/
+flutter_application_1/build/
+flutter_application_1/.flutter-plugins
+flutter_application_1/.flutter-plugins-dependencies
+flutter_application_1/.metadata
+
+# Android
+flutter_application_1/android/.gradle/
+flutter_application_1/android/app/build/
+flutter_application_1/android/local.properties
+
+# iOS/macOS (CocoaPods + ephemeral)
+flutter_application_1/ios/Pods/
+flutter_application_1/ios/Flutter/.last_build_id
+flutter_application_1/macos/Pods/
+flutter_application_1/macos/Flutter/ephemeral/
+
+# Windows/Linux ephemeral
+flutter_application_1/windows/flutter/ephemeral/
+flutter_application_1/linux/flutter/ephemeral/
+
+# ถ้าในโฟลเดอร์ Flutter มีใช้ npm สำหรับ tooling
+flutter_application_1/node_modules/
+
+# -------- Editor / OS --------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+dorm-mirror/
