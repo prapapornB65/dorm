@@ -4,6 +4,7 @@ import 'package:flutter_application_1/color_app.dart';
 import 'package:flutter_application_1/widgets/neumorphic_card.dart';
 import 'package:flutter_application_1/config/api_config.dart' show apiBaseUrl;
 import 'package:http/http.dart' as http;
+import 'package:flutter_application_1/widgets/page_header_card.dart';
 
 class PaymentRow {
   final String roomNumber;
@@ -122,62 +123,63 @@ class _PaymentsPageState extends State<PaymentsPage> {
   }
 
   Future<void> _fetch() async {
-  setState(() {
-    isLoading = true;
-    errorMessage = null;
-  });
-
-  final ym = '${month.year.toString().padLeft(4, '0')}-${month.month.toString().padLeft(2, '0')}';
-  final uri = Uri.parse('$apiBaseUrl/api/building/${widget.buildingId}/bills?month=$ym');
-
-  try {
-    final res = await http.get(uri).timeout(const Duration(seconds: 12));
-    if (res.statusCode != 200) {
-      throw Exception('HTTP ${res.statusCode}: ${res.body}');
-    }
-
-    final raw = jsonDecode(res.body);
-
-    // ---- ดึง list ออกมาแบบยืดหยุ่น ----
-    List<dynamic> list;
-    if (raw is List) {
-      list = raw;
-    } else if (raw is Map) {
-      final m = raw as Map;
-      final candidate = m['rows'] ?? m['data'] ?? m['items'] ?? const [];
-      list = (candidate is List) ? candidate : const [];
-    } else {
-      list = const [];
-    }
-
-    // ---- map เป็น PaymentRow ทีละตัว ----
-    final rows = list
-        .whereType<Map>() // guard ให้เป็น Map จริง ๆ
-        .map((e) => PaymentRow.fromJson(Map<String, dynamic>.from(e)))
-        .toList(growable: false);
-
-    if (!mounted) return;
     setState(() {
-      all = rows;
-      _applyFilter();
-      isLoading = false;
+      isLoading = true;
+      errorMessage = null;
     });
-  } catch (e, st) {
-    // ถ้าจะให้เดินต่อด้วย mock ก็ปล่อยไว้; ถ้าไม่ต้องการ mock ให้โยน error ออกเฉย ๆ
-    debugPrint('Payments _fetch error: $e\n$st');
-    if (!mounted) return;
-    setState(() {
-      errorMessage = 'โหลดข้อมูลไม่สำเร็จ: $e';
-      isLoading = false;
-    });
+
+    final ym =
+        '${month.year.toString().padLeft(4, '0')}-${month.month.toString().padLeft(2, '0')}';
+    final uri = Uri.parse(
+        '$apiBaseUrl/api/owner/building/${widget.buildingId}/bills?month=$ym');
+
+    try {
+      final res = await http.get(uri).timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) {
+        throw Exception('HTTP ${res.statusCode}: ${res.body}');
+      }
+
+      final raw = jsonDecode(res.body);
+
+      // ---- ดึง list ออกมาแบบยืดหยุ่น ----
+      List<dynamic> list;
+      if (raw is List) {
+        list = raw;
+      } else if (raw is Map) {
+        final m = raw as Map;
+        final candidate = m['rows'] ?? m['data'] ?? m['items'] ?? const [];
+        list = (candidate is List) ? candidate : const [];
+      } else {
+        list = const [];
+      }
+
+      // ---- map เป็น PaymentRow ทีละตัว ----
+      final rows = list
+          .whereType<Map>() // guard ให้เป็น Map จริง ๆ
+          .map((e) => PaymentRow.fromJson(Map<String, dynamic>.from(e)))
+          .toList(growable: false);
+
+      if (!mounted) return;
+      setState(() {
+        all = rows;
+        _applyFilter();
+        isLoading = false;
+      });
+    } catch (e, st) {
+      // ถ้าจะให้เดินต่อด้วย mock ก็ปล่อยไว้; ถ้าไม่ต้องการ mock ให้โยน error ออกเฉย ๆ
+      debugPrint('Payments _fetch error: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        errorMessage = 'โหลดข้อมูลไม่สำเร็จ: $e';
+        isLoading = false;
+      });
+    }
   }
-}
-
 
   Future<void> _fetchStats() async {
     final ym = '${month.year}-${month.month.toString().padLeft(2, '0')}';
     final u = Uri.parse(
-        '$apiBaseUrl/api/building/${widget.buildingId}/bills-stats?month=$ym');
+        '$apiBaseUrl/api/owner/building/${widget.buildingId}/bills-stats?month=$ym');
     try {
       final r = await http.get(u).timeout(const Duration(seconds: 8));
       if (r.statusCode == 200) {
@@ -230,32 +232,20 @@ class _PaymentsPageState extends State<PaymentsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final ymText = '${month.year}-${month.month.toString().padLeft(2, '0')}';
+
+    // ใช้สถิติที่ดึงจาก API ถ้ามี ไม่งั้นคำนวณจากรายการ
     final rentNum = dueRentStat ?? dueRent;
     final elecNum = dueElecStat ?? dueElec;
     final waterNum = dueWaterStat ?? dueWater;
 
     return Scaffold(
+      // ป้องกันปุ่ม back อัตโนมัติ และตัด AppBar เขียวออก
       appBar: AppBar(
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [AppColors.gradientStart, AppColors.gradientEnd],
-              begin: Alignment.centerLeft,
-              end: Alignment.centerRight,
-            ),
-          ),
-        ),
-        backgroundColor: Colors.transparent,
+        automaticallyImplyLeading: false,
+        toolbarHeight: 0,
         elevation: 0,
-        title: const Text('ชำระเงิน'),
-        actions: [
-          IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: () async {
-                await _fetch();
-                _fetchStats();
-              }),
-        ],
+        backgroundColor: Colors.transparent,
       ),
       body: RefreshIndicator(
         color: AppColors.primary,
@@ -267,6 +257,7 @@ class _PaymentsPageState extends State<PaymentsPage> {
           if (isLoading) {
             return ListView(
               physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
               children: const [
                 SizedBox(height: 220),
                 Center(
@@ -275,15 +266,42 @@ class _PaymentsPageState extends State<PaymentsPage> {
               ],
             );
           }
+
           if (errorMessage != null) {
             return ListView(
               physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.all(18),
+              padding: const EdgeInsets.all(16),
               children: [
+                PageHeaderCard(
+                  showBack: false,
+                  leadingIcon: Icons.payments_rounded,
+                  title: 'ชำระเงิน • ${widget.buildingName ?? "-"}',
+                  chipText: 'เดือน $ymText',
+                  actions: [
+                    IconButton(
+                      tooltip: 'เลือกเดือน/ปี',
+                      onPressed: _pickMonth,
+                      icon: const Icon(Icons.calendar_month_rounded,
+                          color: AppColors.primaryDark),
+                    ),
+                    IconButton(
+                      tooltip: 'รีเฟรช',
+                      onPressed: () async {
+                        await _fetch();
+                        _fetchStats();
+                      },
+                      icon: const Icon(Icons.refresh_rounded,
+                          color: AppColors.primaryDark),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
                 NeumorphicCard(
                   padding: const EdgeInsets.all(18),
-                  child: Text(errorMessage!,
-                      style: const TextStyle(color: Colors.red)),
+                  child: Text(
+                    'เกิดข้อผิดพลาด: ${'${errorMessage!}'}',
+                    style: const TextStyle(color: Colors.red),
+                  ),
                 ),
                 const SizedBox(height: 8),
                 OutlinedButton.icon(
@@ -298,11 +316,39 @@ class _PaymentsPageState extends State<PaymentsPage> {
             );
           }
 
+          // ปกติ
           return ListView(
             physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 24),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
             children: [
-              // ===== ตัวนับ =====
+              // ─── หัวกล่องสีขาว ───
+              PageHeaderCard(
+                showBack: false,
+                leadingIcon: Icons.payments_rounded,
+                title: 'ชำระเงิน ',
+                chipText: 'เดือน $ymText',
+                actions: [
+                  IconButton(
+                    tooltip: 'เลือกเดือน/ปี',
+                    onPressed: _pickMonth,
+                    icon: const Icon(Icons.calendar_month_rounded,
+                        color: AppColors.primaryDark),
+                  ),
+                  IconButton(
+                    tooltip: 'รีเฟรช',
+                    onPressed: () async {
+                      await _fetch();
+                      _fetchStats();
+                    },
+                    icon: const Icon(Icons.refresh_rounded,
+                        color: AppColors.primaryDark),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 12),
+
+              // ─── ตัวนับ ───
               Wrap(
                 spacing: 12,
                 runSpacing: 12,
@@ -312,9 +358,10 @@ class _PaymentsPageState extends State<PaymentsPage> {
                   _StatCard(title: 'ค้างชำระค่าน้ำ', value: waterNum),
                 ],
               ),
+
               const SizedBox(height: 18),
 
-              // ===== แถบเครื่องมือ =====
+              // ─── แถบเครื่องมือ ───
               NeumorphicCard(
                 padding: const EdgeInsets.all(12),
                 child: Wrap(
@@ -325,8 +372,7 @@ class _PaymentsPageState extends State<PaymentsPage> {
                     OutlinedButton.icon(
                       onPressed: _pickMonth,
                       icon: const Icon(Icons.calendar_month_rounded),
-                      label: Text(
-                          '${month.year}-${month.month.toString().padLeft(2, '0')}'),
+                      label: Text(ymText),
                     ),
                     SizedBox(
                       width: 260,
@@ -357,9 +403,10 @@ class _PaymentsPageState extends State<PaymentsPage> {
                   ],
                 ),
               ),
+
               const SizedBox(height: 12),
 
-              // ===== ตาราง =====
+              // ─── ตาราง ───
               NeumorphicCard(
                 padding: const EdgeInsets.all(12),
                 child: filtered.isEmpty

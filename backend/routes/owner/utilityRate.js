@@ -79,7 +79,7 @@ module.exports = (db) => {
 
   // (คง route เดิมไว้เพื่อ backward-compat ถ้ายังมี client เก่าเรียกใช้)
   // PUT /api/owner/utilities/rate
-  router.put('/owner/utilities/rate', express.json(), async (req, res) => {
+  router.put('/utilities/rate', express.json(), async (req, res) => {
     const { ownerId, buildingId, electricUnitPrice, waterUnitPrice, effectiveDate } = req.body || {};
     if (!ownerId || !buildingId) {
       return res.status(400).json({ error: 'ownerId and buildingId required' });

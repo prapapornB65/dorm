@@ -103,12 +103,16 @@ class GradientScaffold extends StatelessWidget {
     this.appBar,
     this.bottomNavigationBar,
     this.floatingActionButton,
+
+    // ⬇️ เพิ่มพารามิเตอร์ควบคุมมุมบน (0 = ไม่โค้ง)
+    this.topRadius = 0,
   });
 
   final PreferredSizeWidget? appBar;
   final Widget body;
   final Widget? bottomNavigationBar;
   final Widget? floatingActionButton;
+  final double topRadius; // ⬅️ เพิ่ม
 
   @override
   Widget build(BuildContext context) {
@@ -125,9 +129,13 @@ class GradientScaffold extends StatelessWidget {
         appBar: appBar,
         body: SafeArea(
           child: Container(
-            decoration: const BoxDecoration(
+            // กันสีพื้นหลัง/เงาไหลเกินขอบเวลาใช้มุมโค้ง
+            clipBehavior: Clip.hardEdge,
+            decoration: BoxDecoration(
               color: AppColors.surface,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              borderRadius: BorderRadius.vertical(
+                top: Radius.circular(topRadius), // ⬅️ ใช้ค่าที่ส่งมา
+              ),
             ),
             child: body,
           ),

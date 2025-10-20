@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_application_1/owner/iot.dart/owner_meters_page.dart';
 import 'package:http/http.dart' as http;
+import 'package:firebase_auth/firebase_auth.dart';
 
 // PAGES
 import 'package:flutter_application_1/auth/login_page.dart' hide AppColors;
@@ -9,12 +11,15 @@ import 'package:flutter_application_1/owner/money/monthly_income_page.dart';
 import 'package:flutter_application_1/owner/building/building.dart'
     show BuildingSelectionScreen;
 import 'package:flutter_application_1/owner/room/RoomListPage.dart';
-import 'package:flutter_application_1/owner/home/approval_page.dart';
 import 'package:flutter_application_1/owner/iot.dart/owner_electric_page.dart';
 import 'package:flutter_application_1/owner/tenant/tenant.dart';
 import 'package:flutter_application_1/owner/money/payments_page.dart';
 import 'package:flutter_application_1/owner/home/approval_page.dart'
     show OwnerApprovalsPage;
+import 'package:flutter_application_1/owner/money/auto_billing_settings_page.dart';
+import 'package:flutter_application_1/owner/money/monthly_expenses_page.dart';
+import 'package:flutter_application_1/owner/equipment/equipment_catalog_page.dart';
+import 'package:flutter_application_1/owner/equipment/repair_request_page.dart';
 // THEME / CONFIG
 import 'package:flutter_application_1/color_app.dart';
 import 'package:flutter_application_1/config/api_config.dart' show apiBaseUrl;
@@ -54,14 +59,43 @@ class _OwnerDashboardScreenState extends State<OwnerDashboardScreen> {
   int overdueRoomCount = 0;
   double totalElectric = 0;
   double totalWater = 0;
+  int selectedYear = DateTime.now().year;
+  int selectedMonth = DateTime.now().month;
 
   int selectedMenuIndex = 0; // 0: overview, 1: ผู้เช่า, 2: ชำระเงิน, 3: อนุมัติ
   List<dynamic> rooms = [];
+
+  double currentMonthTotal = 0.0;
+  List<Map<String, dynamic>> currentItems = [];
 
   @override
   void initState() {
     super.initState();
     _loadAll();
+    _fetchDetail();
+  }
+
+  Future<void> _fetchDetail() async {
+    try {
+      final url = Uri.parse(
+        '$apiBaseUrl/api/owner/building/${widget.buildingId}/monthly-income-detail'
+        '?year=$selectedYear&month=$selectedMonth',
+      );
+      final res = await http.get(url, headers: await _authHeaders());
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (!mounted) return;
+        setState(() {
+          currentMonthTotal = (data['total'] as num?)?.toDouble() ?? 0.0;
+          currentItems =
+              List<Map<String, dynamic>>.from(data['items'] ?? const []);
+        });
+      } else {
+        debugPrint('[DETAIL] HTTP ${res.statusCode}: ${res.body}');
+      }
+    } catch (e) {
+      debugPrint('[DETAIL] error: $e');
+    }
   }
 
   Future<void> _loadAll() async {
@@ -99,17 +133,26 @@ class _OwnerDashboardScreenState extends State<OwnerDashboardScreen> {
   }
 
   Future<void> _fetchRoomData() async {
-    final url = Uri.parse('$apiBaseUrl/api/rooms/${widget.buildingId}');
+    final url = Uri.parse('$apiBaseUrl/api/owner/rooms/${widget.buildingId}');
     final sw = Stopwatch()..start();
     debugPrint('[ROOMS] GET $url');
 
-    final res = await http.get(url).timeout(const Duration(seconds: 12));
+    final res = await http
+        .get(url, headers: await _authHeaders())
+        .timeout(const Duration(seconds: 12));
+
     sw.stop();
     debugPrint(
         '[ROOMS] ${res.statusCode} in ${sw.elapsedMilliseconds}ms len=${res.body.length}');
+
     if (res.statusCode != 200) {
-      throw Exception(
-          'HTTP ${res.statusCode}: ${res.reasonPhrase ?? "unknown"}');
+      String msg = 'HTTP ${res.statusCode}';
+      try {
+        final j = json.decode(res.body);
+        final m = (j['error'] ?? j['message'])?.toString();
+        if (m != null && m.isNotEmpty) msg = m;
+      } catch (_) {}
+      throw Exception(msg);
     }
 
     final decoded = json.decode(res.body);
@@ -118,61 +161,86 @@ class _OwnerDashboardScreenState extends State<OwnerDashboardScreen> {
       list.map((e) => Map<String, dynamic>.from(e as Map)),
     );
 
-    tenantCount = rooms.where((r) => r['tenant'] != null).length;
+    // นับเฉพาะจำนวนห้องจากรายการ
     roomCount = rooms.length;
-    overdueRoomCount = rooms.where((r) => r['isOverdue'] == true).length;
 
-    // ใช้ asDouble เพื่อรองรับทั้ง number, "0", null
-    // และเผื่อ backend ส่ง EnergyKwh แทน electric
-    totalElectric = rooms.fold<double>(
-      0.0,
-      (s, r) => s + asDouble(r['electric'] ?? r['EnergyKwh']),
-    );
-
-    totalWater = rooms.fold<double>(
-      0.0,
-      (s, r) => s + asDouble(r['water']),
-    );
-
-    // ถ้าต้องใช้ power รวมในอนาคต:
-    // final totalPower = rooms.fold<double>(0.0, (s, r) => s + asDouble(r['powerW']));
+    // ค่าอื่น ๆ ให้มาจาก endpoint เฉพาะ (เช่น tenant-count / summary)
+    // หากยังไม่มีข้อมูล ก็ปล่อยค่าเริ่มต้นไว้
   }
 
-// โหลดรายรับจาก /api/building/:id/monthly-income พร้อม log และ timeout
+  Future<Map<String, String>> _authHeaders() async {
+    final user = FirebaseAuth.instance.currentUser;
+    final token = await user?.getIdToken();
+    return {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+  }
+
   Future<void> _fetchMonthlyIncome() async {
+    // ✅ ใช้ endpoint summary ที่ส่งเป็น { months: [{month, total}, ...] }
     final url = Uri.parse(
-        '$apiBaseUrl/api/building/${widget.buildingId}/monthly-income');
+      '$apiBaseUrl/api/owner/building/${widget.buildingId}/monthly-income-summary?months=12',
+    );
     final sw = Stopwatch()..start();
     debugPrint('[INCOME] GET $url');
 
-    final res = await http.get(url).timeout(const Duration(seconds: 12));
-    sw.stop();
-    debugPrint('[INCOME] ${res.statusCode} in ${sw.elapsedMilliseconds}ms '
-        'len=${res.body.length}');
-    if (res.statusCode != 200) {
-      throw Exception(
-          'HTTP ${res.statusCode}: ${res.reasonPhrase ?? "unknown"}');
-    }
+    try {
+      final res = await http
+          .get(url, headers: await _authHeaders())
+          .timeout(const Duration(seconds: 10));
 
-    final data = json.decode(res.body);
-    totalIncome = double.tryParse('${data['totalBalance']}') ?? 0;
+      sw.stop();
+      debugPrint(
+          '[INCOME] ${res.statusCode} in ${sw.elapsedMilliseconds}ms len=${res.body.length}');
+
+      if (res.statusCode != 200) {
+        String msg = 'HTTP ${res.statusCode}';
+        try {
+          final j = json.decode(res.body);
+          final m = (j['error'] ?? j['message'])?.toString();
+          if (m != null && m.isNotEmpty) msg = m;
+        } catch (_) {}
+        throw Exception(msg);
+      }
+
+      // 👇 วาง 3 บรรทัดนี้ตรงนี้
+      final data = json.decode(res.body);
+      final months = (data['months'] as List?) ?? [];
+      totalIncome = months.isNotEmpty ? asDouble(months.last['total']) : 0.0;
+    } on TimeoutException {
+      sw.stop();
+      debugPrint('[INCOME] timeout in ${sw.elapsedMilliseconds}ms');
+      totalIncome = 0;
+      errorMessage ??= 'โหลดข้อมูลรายรับช้า (timeout)';
+    } catch (e) {
+      sw.stop();
+      debugPrint('[INCOME] error: $e');
+      totalIncome = 0;
+      errorMessage ??= 'โหลดข้อมูลรายรับไม่สำเร็จ: $e';
+    }
   }
 
   Future<void> fetchTenantCount() async {
-    final url =
-        Uri.parse('$apiBaseUrl/api/building/${widget.buildingId}/tenant-count');
-    // ถ้าไฟล์ config ของคุณใช้ตัวแปรชื่อ apiBaseUrl แทน ก็เปลี่ยน $baseUrl -> $apiBaseUrl
+    final url = Uri.parse(
+        '$apiBaseUrl/api/owner/building/${widget.buildingId}/tenant-count');
 
     try {
-      final resp = await http.get(url).timeout(const Duration(seconds: 10));
+      final resp = await http
+          .get(url, headers: await _authHeaders())
+          .timeout(const Duration(seconds: 10));
+
       if (resp.statusCode == 200) {
         final data = json.decode(resp.body);
-        setState(() => tenantCount = (data['count'] ?? 0) as int);
+        if (mounted) setState(() => tenantCount = (data['count'] ?? 0) as int);
       } else {
-        // เผื่อไว้: ถ้าพลาดก็ปล่อยให้ใช้ค่าที่คำนวณจาก rooms ต่อไป
+        // เงียบไว้ ใช้ค่าจาก rooms ต่อ
+        debugPrint('[TENANT-COUNT] HTTP ${resp.statusCode}: ${resp.body}');
       }
-    } catch (_) {
-      // เผื่อไว้: ถ้าพลาดก็ปล่อยให้ใช้ค่าที่คำนวณจาก rooms ต่อไป
+    } on TimeoutException {
+      debugPrint('[TENANT-COUNT] timeout');
+    } catch (e) {
+      debugPrint('[TENANT-COUNT] error: $e');
     }
   }
 
@@ -233,43 +301,34 @@ class _OwnerDashboardScreenState extends State<OwnerDashboardScreen> {
           Expanded(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 250),
-              // 👇 สำคัญ: ไม่จัดกลางอีกต่อไป แต่ปักลูกไว้ด้านบนให้กินเต็มพื้นที่
-              layoutBuilder: (currentChild, previousChildren) {
-                return Stack(
-                  children: <Widget>[
-                    ...previousChildren,
-                    if (currentChild != null)
-                      Positioned.fill(
-                        child: Align(
-                          alignment: Alignment.topCenter,
-                          child: currentChild,
+              child: SizedBox.expand(
+                // 👈 ให้ child มีขนาดเต็มพื้นที่เสมอ
+                key: ValueKey(selectedMenuIndex),
+                child: isLoading
+                    ? const _Skeleton()
+                    : Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: _ContentArea(
+                          selectedIndex: selectedMenuIndex,
+                          buildingName: widget.buildingName,
+                          buildingId: widget.buildingId,
+                          ownerId: widget.ownerId,
+                          summary: _Summary(
+                            tenantCount: tenantCount,
+                            roomCount: roomCount,
+                            totalIncome: totalIncome,
+                            overdueRoomCount: overdueRoomCount,
+                            totalElectric: totalElectric,
+                            totalWater: totalWater,
+                          ),
+                          errorMessage: errorMessage,
+                          onSeeRooms: () =>
+                              setState(() => selectedMenuIndex = 1),
+                          onSeeIncome: () =>
+                              setState(() => selectedMenuIndex = 2),
                         ),
                       ),
-                  ],
-                );
-              },
-              child: isLoading
-                  ? const _Skeleton()
-                  : Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: _ContentArea(
-                        selectedIndex: selectedMenuIndex,
-                        buildingName: widget.buildingName,
-                        buildingId: widget.buildingId,
-                        ownerId: widget.ownerId,
-                        summary: _Summary(
-                          tenantCount: tenantCount,
-                          roomCount: roomCount,
-                          totalIncome: totalIncome,
-                          overdueRoomCount: overdueRoomCount,
-                          totalElectric: totalElectric,
-                          totalWater: totalWater,
-                        ),
-                        errorMessage: errorMessage,
-                        onSeeRooms: () {/* ... */},
-                        onSeeIncome: () {/* ... */},
-                      ),
-                    ),
+              ),
             ),
           ),
         ],
@@ -317,11 +376,11 @@ class _SidebarContent extends StatelessWidget {
   Widget build(BuildContext context) {
     final items = const [
       (Icons.dashboard_rounded, 'ภาพรวม'),
-      (Icons.people_alt_rounded, 'ผู้เช่า'),
-      (Icons.payments_rounded, 'ชำระเงิน'),
-      (Icons.tungsten_rounded, 'ค่าน้ำ/ไฟ'),
-      (Icons.verified_rounded, 'อนุมัติ'),
-      (Icons.home_work_rounded, 'เลือกตึก'),
+      (Icons.people_outline_rounded, 'ผู้ใช้ & ห้องพัก'),
+      (Icons.account_balance_wallet, 'การเงิน'),
+      (Icons.sensors_rounded, 'อุปกรณ์ & มิเตอร์'),
+      (Icons.build_circle_rounded, 'งาน & ซ่อมบำรุง'),
+      (Icons.settings_rounded, 'ตั้งค่า'),
     ];
 
     return Container(
@@ -483,6 +542,7 @@ class _ContentArea extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pages = [
+      // 0) ภาพรวม
       _Overview(
         buildingName: buildingName,
         buildingId: buildingId,
@@ -491,30 +551,328 @@ class _ContentArea extends StatelessWidget {
         onSeeRooms: onSeeRooms,
         onSeeIncome: onSeeIncome,
       ),
-      TenantListPage(
+
+      // 1) ผู้ใช้ & ห้องพัก  (แท็บ: ผู้เช่า / ห้องพัก / อนุมัติ)
+      UsersRoomsHubPage(
         buildingId: buildingId,
         ownerId: ownerId,
         buildingName: buildingName,
       ),
-      PaymentsPage(
+
+      // 2) การเงิน (แท็บ: รายรับ / รายจ่าย / ชำระเงิน / ตัดยอดอัตโนมัติ)
+      FinanceHubPage(
         buildingId: buildingId,
         ownerId: ownerId,
         buildingName: buildingName,
       ),
-      OwnerElectricPage(
-        ownerId: ownerId,
-        buildingId: buildingId,
-        buildingName: '',
-      ),
-      OwnerApprovalsPage(
+
+      // 3) อุปกรณ์ & มิเตอร์ (แท็บ: มิเตอร์ทั้งหมด/ค่าน้ำไฟ, คลังอุปกรณ์)
+      DevicesHubPage(
         ownerId: ownerId,
         buildingId: buildingId,
         buildingName: buildingName,
-        embedded: true,
+      ),
+
+      // 4) งาน & ซ่อมบำรุง (แท็บ: แจ้งซ่อม, ประวัติงาน)
+      MaintenanceHubPage(
+        ownerId: ownerId,
+        buildingId: buildingId,
+      ),
+
+      // 5) ตั้งค่า (แท็บ: สลับตึก, เกณฑ์/อัตราค่าไฟน้ำ)
+      SettingsHubPage(
+        buildingId: buildingId,
+        ownerId: ownerId,
+        buildingName: buildingName,
+        onChooseBuilding: () {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BuildingSelectionScreen(ownerId: ownerId),
+            ),
+          );
+        },
       ),
     ];
 
     return pages[selectedIndex];
+  }
+}
+
+class UsersRoomsHubPage extends StatelessWidget {
+  const UsersRoomsHubPage({
+    super.key,
+    required this.buildingId,
+    required this.ownerId,
+    required this.buildingName,
+  });
+  final int buildingId, ownerId;
+  final String buildingName;
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 3,
+      child: Column(
+        children: const [
+          _HubHeader(
+              icon: Icons.people_outline_rounded, title: 'ผู้ใช้ & ห้องพัก'),
+          TabBar(tabs: [
+            Tab(text: 'ผู้เช่า'),
+            Tab(text: 'ห้องพัก'),
+            Tab(text: 'อนุมัติ'),
+          ]),
+          SizedBox(height: 8),
+          Expanded(
+            child: _UsersRoomsTabs(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class FinanceHubPage extends StatelessWidget {
+  const FinanceHubPage({
+    super.key,
+    required this.buildingId,
+    required this.ownerId,
+    required this.buildingName,
+  });
+  final int buildingId, ownerId;
+  final String buildingName;
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 4,
+      child: Column(
+        children: const [
+          _HubHeader(icon: Icons.account_balance_wallet, title: 'การเงิน'),
+          TabBar(tabs: [
+            Tab(text: 'รายรับ/เดือน'),
+            Tab(text: 'รายจ่าย/เดือน'),
+            Tab(text: 'ชำระเงิน'),
+            Tab(text: 'ตัดยอดอัตโนมัติ'),
+          ]),
+          SizedBox(height: 8),
+          Expanded(child: _FinanceTabs()),
+        ],
+      ),
+    );
+  }
+}
+
+class _FinanceTabs extends StatelessWidget {
+  const _FinanceTabs();
+
+  @override
+  Widget build(BuildContext context) {
+    final args = context.findAncestorWidgetOfExactType<FinanceHubPage>()!;
+    return TabBarView(
+      children: [
+        MonthlyIncomePage(
+            buildingId: args.buildingId, buildingName: args.buildingName),
+        MonthlyExpensesPage(
+            buildingId: args.buildingId,
+            ownerId: args.ownerId,
+            buildingName: args.buildingName),
+        PaymentsPage(
+            buildingId: args.buildingId,
+            ownerId: args.ownerId,
+            buildingName: args.buildingName),
+        AutoBillingSettingsPage(buildingId: args.buildingId),
+      ],
+    );
+  }
+}
+
+class DevicesHubPage extends StatelessWidget {
+  const DevicesHubPage({
+    super.key,
+    required this.ownerId,
+    required this.buildingId,
+    required this.buildingName,
+  });
+  final int ownerId, buildingId;
+  final String buildingName;
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 3,
+      child: Column(
+        children: [
+          const _HubHeader(
+              icon: Icons.sensors_rounded, title: 'อุปกรณ์ & มิเตอร์'),
+          const TabBar(tabs: [
+            Tab(text: 'ค่าน้ำ-ค่าไฟ'),
+            Tab(text: 'มิเตอร์'),
+            Tab(text: 'คลังอุปกรณ์'),
+          ]),
+          const SizedBox(height: 8),
+          Expanded(
+            child: TabBarView(
+              children: [
+                OwnerElectricPage(
+                  ownerId: ownerId,
+                  buildingId: buildingId,
+                  buildingName: buildingName,
+                ),
+                OwnerMetersPage(
+                  buildingId: buildingId,
+                ),
+                OwnerEquipmentPage(ownerId: ownerId, buildingId: buildingId),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class MaintenanceHubPage extends StatelessWidget {
+  const MaintenanceHubPage(
+      {super.key, required this.ownerId, required this.buildingId});
+  final int ownerId, buildingId;
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: const [
+          _HubHeader(
+              icon: Icons.build_circle_rounded, title: 'งาน & ซ่อมบำรุง'),
+          TabBar(tabs: [
+            Tab(text: 'แจ้งซ่อม'),
+            Tab(text: 'ประวัติงาน'),
+          ]),
+          SizedBox(height: 8),
+          Expanded(child: _MaintenanceTabs()),
+        ],
+      ),
+    );
+  }
+}
+
+class _MaintenanceTabs extends StatelessWidget {
+  const _MaintenanceTabs();
+
+  @override
+  Widget build(BuildContext context) {
+    final args = context.findAncestorWidgetOfExactType<MaintenanceHubPage>()!;
+    return TabBarView(
+      children: [
+        RepairRequestPage(ownerId: args.ownerId, buildingId: args.buildingId),
+        // Placeholder ประวัติ (เติมภายหลัง)
+        Center(child: Text('ประวัติงาน (เร็ว ๆ นี้)')),
+      ],
+    );
+  }
+}
+
+class SettingsHubPage extends StatelessWidget {
+  const SettingsHubPage({
+    super.key,
+    required this.buildingId,
+    required this.ownerId,
+    required this.buildingName,
+    required this.onChooseBuilding,
+  });
+  final int buildingId, ownerId;
+  final String buildingName;
+  final VoidCallback onChooseBuilding;
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: const [
+          _HubHeader(icon: Icons.settings_rounded, title: 'ตั้งค่า'),
+          TabBar(tabs: [
+            Tab(text: 'สลับตึก'),
+            Tab(text: 'อัตรา/เกณฑ์ไฟ-น้ำ'),
+          ]),
+          SizedBox(height: 8),
+          Expanded(child: _SettingsTabs()),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsTabs extends StatelessWidget {
+  const _SettingsTabs();
+
+  @override
+  Widget build(BuildContext context) {
+    final args = context.findAncestorWidgetOfExactType<SettingsHubPage>()!;
+    return TabBarView(children: [
+      BuildingSelectionScreen(ownerId: args.ownerId),
+      AutoBillingSettingsPage(buildingId: args.buildingId),
+    ]);
+  }
+}
+
+class _HubHeader extends StatelessWidget {
+  const _HubHeader({required this.icon, required this.title});
+  final IconData icon;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x14000000), blurRadius: 16, offset: Offset(0, 8)),
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: AppColors.primaryDark),
+          const SizedBox(width: 10),
+          Text(title,
+              style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textPrimary,
+                  fontSize: 18)),
+        ],
+      ),
+    );
+  }
+}
+
+class _UsersRoomsTabs extends StatelessWidget {
+  const _UsersRoomsTabs();
+
+  @override
+  Widget build(BuildContext context) {
+    final args = context.findAncestorWidgetOfExactType<UsersRoomsHubPage>()!;
+    return TabBarView(
+      children: [
+        TenantListPage(
+          buildingId: args.buildingId,
+          ownerId: args.ownerId,
+          buildingName: args.buildingName,
+        ),
+        RoomListPage(buildingId: args.buildingId),
+        OwnerApprovalsPage(
+          ownerId: args.ownerId,
+          buildingId: args.buildingId,
+          buildingName: args.buildingName,
+          embedded: true,
+        ),
+      ],
+    );
   }
 }
 
@@ -537,108 +895,115 @@ class _Overview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Header
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppColors.border),
-            boxShadow: const [
-              BoxShadow(
-                  color: Color(0x14000000),
-                  blurRadius: 16,
-                  offset: Offset(0, 8))
-            ],
-          ),
-          child: Row(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.dashboard_customize_rounded,
-                  color: AppColors.primaryDark),
-              const SizedBox(width: 10),
-              Text('ภาพรวม • $buildingName',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                      color: AppColors.textPrimary,
-                      fontSize: 18)),
-              const Spacer(),
+              // Header
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                 decoration: BoxDecoration(
-                    color: AppColors.primaryLight,
-                    borderRadius: BorderRadius.circular(20)),
-                child: Text('Building ID: $buildingId',
-                    style: const TextStyle(
-                        color: AppColors.primaryDark,
-                        fontWeight: FontWeight.w700)),
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.border),
+                  boxShadow: const [
+                    BoxShadow(
+                        color: Color(0x14000000),
+                        blurRadius: 16,
+                        offset: Offset(0, 8)),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.dashboard_customize_rounded,
+                        color: AppColors.primaryDark),
+                    const SizedBox(width: 10),
+                    Text('ภาพรวม • $buildingName',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textPrimary,
+                            fontSize: 18)),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.primaryLight,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text('Building ID: $buildingId',
+                          style: const TextStyle(
+                              color: AppColors.primaryDark,
+                              fontWeight: FontWeight.w700)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              if (errorMessage != null) _ErrorBanner(message: errorMessage!),
+
+              // KPI
+              Wrap(
+                spacing: 18,
+                runSpacing: 18,
+                children: [
+                  _KpiCard(
+                      value: '${summary.tenantCount}',
+                      label: 'ผู้เช่าทั้งหมด',
+                      icon: Icons.people_alt_rounded),
+                  _KpiCard(
+                      value: '${summary.roomCount}',
+                      label: 'ห้องทั้งหมด',
+                      icon: Icons.meeting_room_rounded,
+                      onTap: onSeeRooms),
+                  _KpiCard(
+                      value: summary.totalIncome.toStringAsFixed(2),
+                      label: 'รายรับ/เดือน',
+                      icon: Icons.attach_money_rounded,
+                      onTap: onSeeIncome),
+                  _KpiCard(
+                      value: '${summary.overdueRoomCount}',
+                      label: 'ค้างชำระ/ห้อง',
+                      icon: Icons.warning_amber_rounded),
+                  _KpiCard(
+                      value: summary.totalElectric.toStringAsFixed(2),
+                      label: 'ค่าไฟ/เดือน',
+                      icon: Icons.bolt_rounded),
+                  _KpiCard(
+                      value: summary.totalWater.toStringAsFixed(2),
+                      label: 'ค่าน้ำ/เดือน',
+                      icon: Icons.opacity_rounded),
+                ],
+              ),
+
+              const SizedBox(height: 22),
+
+              // Analytics row
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  Flexible(
+                      child: _AnalyticsCard(
+                          title: 'สถิติรายสัปดาห์',
+                          subtitle: 'ภาพรวมการเงิน',
+                          icon: Icons.show_chart_rounded)),
+                  SizedBox(width: 18),
+                  Flexible(
+                      child: _AnalyticsCard(
+                          title: 'ประวัติธุรกรรม',
+                          subtitle: 'เดือนปัจจุบัน',
+                          icon: Icons.pie_chart_rounded)),
+                ],
               ),
             ],
           ),
-        ),
-        const SizedBox(height: 16),
-
-        if (errorMessage != null) _ErrorBanner(message: errorMessage!),
-
-        // KPI Cards
-        Wrap(
-          spacing: 18,
-          runSpacing: 18,
-          children: [
-            _KpiCard(
-                value: '${summary.tenantCount}',
-                label: 'ผู้เช่าทั้งหมด',
-                icon: Icons.people_alt_rounded),
-            _KpiCard(
-                value: '${summary.roomCount}',
-                label: 'ห้องทั้งหมด',
-                icon: Icons.meeting_room_rounded,
-                onTap: onSeeRooms),
-            _KpiCard(
-                value: summary.totalIncome.toStringAsFixed(2),
-                label: 'รายรับ/เดือน',
-                icon: Icons.attach_money_rounded,
-                onTap: onSeeIncome),
-            _KpiCard(
-                value: '${summary.overdueRoomCount}',
-                label: 'ค้างชำระ/ห้อง',
-                icon: Icons.warning_amber_rounded),
-            _KpiCard(
-                value: summary.totalElectric.toStringAsFixed(2),
-                label: 'ค่าไฟ/เดือน',
-                icon: Icons.bolt_rounded),
-            _KpiCard(
-                value: summary.totalWater.toStringAsFixed(2),
-                label: 'ค่าน้ำ/เดือน',
-                icon: Icons.opacity_rounded),
-          ],
-        ),
-
-        const SizedBox(height: 22),
-
-        // Analytics mock section
-        Row(
-          children: const [
-            Flexible(
-              child: _AnalyticsCard(
-                title: 'สถิติรายสัปดาห์',
-                subtitle: 'ภาพรวมการเงิน',
-                icon: Icons.show_chart_rounded,
-              ),
-            ),
-            SizedBox(width: 18),
-            Flexible(
-              child: _AnalyticsCard(
-                title: 'ประวัติธุรกรรม',
-                subtitle: 'เดือนปัจจุบัน',
-                icon: Icons.pie_chart_rounded,
-              ),
-            ),
-          ],
-        ),
-      ],
+        );
+      },
     );
   }
 }

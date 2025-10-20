@@ -33,6 +33,8 @@ class RoomItem {
         imageUrl: j['FirstImageURL']?.toString() ?? j['ImageURL']?.toString(),
       );
 
+  get address => null;
+
   Map<String, dynamic> toJson() => {
         'RoomNumber': roomNumber,
         'BuildingName': buildingName,

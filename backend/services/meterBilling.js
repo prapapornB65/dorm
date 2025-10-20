@@ -50,21 +50,27 @@ async function runMeterBilling(db, options = {}) {
   const where = [];
   const params = [];
   if (scope.meterId) { params.push(scope.meterId); where.push(`td.id = $${params.length}`); }
-  if (scope.buildingId) { params.push(scope.buildingId); where.push(`td.building_id = $${params.length}`); }
-  if (scope.ownerId) { params.push(scope.ownerId); where.push(`b."OwnerID" = $${params.length}`); } // ปรับคอลัมน์ตาม schema จริง
+  if (scope.buildingId) { params.push(scope.buildingId); where.push(`b."BuildingID" = $${params.length}`); }
+  if (scope.ownerId) { params.push(scope.ownerId); where.push(`b."OwnerID" = $${params.length}`); }
 
   const sql = `
-    SELECT td.*,
-           (td.dp_map->>'total_kwh') AS dp_total_kwh,
-           (td.dp_map->>'switch')    AS dp_switch,
-           td.tuya_region, td."DeviceID",
-           r."RoomID" AS room_id
-    FROM "TuyaDevice" td
-    LEFT JOIN "Room" r ON r."RoomID" = td.room_id
-    LEFT JOIN "Building" b ON b."BuildingID" = td.building_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-  `;
+  SELECT
+    td.*,
+    td."DeviceID",
+    td."RoomNumber" AS room_no,
+    b."BuildingID"  AS building_id,
+    (td.dp_map->>'total_kwh') AS dp_total_kwh,
+    (td.dp_map->>'switch')    AS dp_switch,
+    NULL AS tuya_region
+  FROM "TuyaDevice" td
+  LEFT JOIN "Room" r
+    ON r."RoomNumber" = td."RoomNumber"
+  LEFT JOIN "Building" b
+    ON b."BuildingID" = r."BuildingID"
+  ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+`;
   const meters = (await db.query(sql, params)).rows;
+
 
   const summary = { scanned: meters.length, updated: 0, cut: 0, lowNoti: 0, criticalNoti: 0, errors: [] };
   const regionMap = new Map();
@@ -81,30 +87,24 @@ async function runMeterBilling(db, options = {}) {
       const total = Number(kv[m.dp_total_kwh]);
       if (!isFinite(total)) return;
 
-      // 2) อ่านค่าอ่านครั้งก่อน
+      // อ่านค่าก่อนหน้า (ใช้ EnergyKwh)
       const prev = await db.query(`
-        SELECT total_kwh FROM "ElectricReading"
-        WHERE "DeviceID"=$1
-        ORDER BY "At" DESC
-        LIMIT 1
-      `, [m.DeviceID]);
-      const prevTotal = prev.rows[0]?.total_kwh ?? null;
-      const delta = (prevTotal === null) ? 0 : Math.max(0, total - Number(prevTotal));
+  SELECT "EnergyKwh" FROM "ElectricReading"
+  WHERE "DeviceID"=$1
+  ORDER BY "At" DESC
+  LIMIT 1
+`, [m.DeviceID]);
+      const prevTotal = prev.rows[0]?.EnergyKwh ?? null;
 
-      // 3) บันทึก reading และ consumption
+      // บันทึกค่าอ่านล่าสุด (เก็บ total ลง EnergyKwh)
       if (!dryRun) {
         await db.query(`
-          INSERT INTO "ElectricReading" ("DeviceID","At", total_kwh, raw)
-          VALUES ($1, now(), $2, $3)
-          ON CONFLICT ("DeviceID","At") DO NOTHING
-        `, [m.DeviceID, total, JSON.stringify(st.result)]);
-        if (delta > 0) {
-          await db.query(`
-            INSERT INTO meter_unit_ledger (meter_id, kind, kwh_delta, note)
-            VALUES ($1,'consumption',$2,'periodic')
-          `, [m.id, -delta]);
-        }
+    INSERT INTO "ElectricReading" ("DeviceID","At","EnergyKwh","Raw")
+    VALUES ($1, now(), $2, $3)
+    ON CONFLICT ("DeviceID","At") DO NOTHING
+  `, [m.DeviceID, total, JSON.stringify(st.result)]);
       }
+
       summary.updated++;
 
       // 4) เครดิตคงเหลือ
@@ -117,9 +117,8 @@ async function runMeterBilling(db, options = {}) {
       // หา tenant ปัจจุบัน (ปรับ query ให้ตรง schema คุณ)
       let tenantId = null;
       try {
-        const t = await db.query(`SELECT "TenantID" FROM "Tenant" WHERE "RoomID"=$1 AND "IsActive"=TRUE LIMIT 1`, [m.room_id]);
-        tenantId = t.rows[0]?.TenantID || null;
-      } catch (_) {}
+const t = await db.query(`SELECT "TenantID" FROM "Tenant" WHERE "RoomNumber"=$1 AND "IsActive"=TRUE LIMIT 1`, [m.room_no]);        tenantId = t.rows[0]?.TenantID || null;
+      } catch (_) { }
 
       // 5) แจ้งเตือน
       if (credit <= low && !dryRun && tenantId) {

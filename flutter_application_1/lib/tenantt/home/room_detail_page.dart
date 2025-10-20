@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_application_1/config/api_config.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_application_1/tenantt/models/room_item.dart';
+import 'package:flutter_application_1/tenantt/service/ContactOwnerPage.dart';
+import 'package:flutter_application_1/utils/shared_prefs_helper.dart'; // ถ้ายังไม่มี import นี้
 
 class AppColors {
   static const gradientStart = Color(0xFF0F6B54);
@@ -28,7 +30,7 @@ class RoomDetail {
   final String status;
   final String roomType;
   final String price;
-  final int size;
+  final double size;
   final int capacity;
   final String address;
   final String? imageUrl;
@@ -47,21 +49,54 @@ class RoomDetail {
     this.imageUrl,
   });
 
-  factory RoomDetail.fromJson(Map<String, dynamic> j) => RoomDetail(
-        roomNumber: j['RoomNumber']?.toString() ?? '',
-        buildingName: j['BuildingName']?.toString() ?? '-',
-        status: j['Status']?.toString() ?? '-',
-        roomType: (j['RoomType'] ?? j['TypeName'])?.toString() ?? '',
-        price: (j['Price'] ?? j['PricePerMonth'])?.toString() ?? '0',
-        size: int.tryParse('${j['Size'] ?? 0}') ?? 0,
-        capacity: int.tryParse('${j['Capacity'] ?? 0}') ?? 0,
-        address: j['Address']?.toString() ?? '',
-        imageUrl: j['FirstImageURL'] ?? j['ImageURL'],
-        equipments: (j['EquipmentList'] as List?)
-                ?.map((e) => e.toString())
-                .toList() ??
-            const [],
-      );
+  factory RoomDetail.fromJson(Map<String, dynamic> j) {
+    // Size robust
+    final rawSize = j['Size'];
+    final parsedSize = (rawSize is num)
+        ? rawSize.toDouble()
+        : double.tryParse(rawSize?.toString() ?? '0') ?? 0.0;
+
+    // Equipments robust (strings หรือ list ของ map)
+    List<String> parseEquipments() {
+      final candidates = [
+        j['EquipmentList'], // จาก /room-detail
+        j['equipments'], // กันเคสอื่น
+        j['equipmentList'], // กันพิมพ์เล็ก
+      ];
+      for (final c in candidates) {
+        if (c is List) {
+          return c
+              .map<String>((e) {
+                if (e is String) return e.trim();
+                if (e is Map) {
+                  final n = e['EquipmentName'] ??
+                      e['equipmentName'] ??
+                      e['name'] ??
+                      e['equipment'];
+                  return (n ?? '').toString().trim();
+                }
+                return '';
+              })
+              .where((s) => s.isNotEmpty)
+              .toList();
+        }
+      }
+      return const <String>[];
+    }
+
+    return RoomDetail(
+      roomNumber: j['RoomNumber']?.toString() ?? '',
+      buildingName: j['BuildingName']?.toString() ?? '-',
+      status: j['Status']?.toString() ?? '-',
+      roomType: (j['RoomType'] ?? j['TypeName'])?.toString() ?? '',
+      price: (j['Price'] ?? j['PricePerMonth'])?.toString() ?? '0',
+      size: parsedSize,
+      capacity: int.tryParse('${j['Capacity'] ?? 0}') ?? 0,
+      address: j['Address']?.toString() ?? '',
+      imageUrl: j['FirstImageURL'] ?? j['ImageURL'],
+      equipments: parseEquipments(),
+    );
+  }
 }
 
 class RoomDetailPage extends StatefulWidget {
@@ -90,43 +125,61 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
   }
 
   Future<RoomDetail> _load() async {
-    // ถ้ามีข้อมูลเบื้องต้นจาก overview ให้แปลงเป็น RoomDetail ก่อน (เร็ว/ลื่น)
-    if (widget.data != null) {
-      final d = widget.data!;
-      // ยิง API เสริมเพื่อรายละเอียดเพิ่ม (อุปกรณ์ ฯลฯ)
-      try {
-        final res = await http
-            .get(Uri.parse('$apiBaseUrl/api/room-detail/${widget.roomNumber}'))
-            .timeout(const Duration(seconds: 12));
-        if (res.statusCode == 200) {
-          return RoomDetail.fromJson(jsonDecode(res.body));
-        }
-      } catch (_) {
-        // ตกมาที่ fallback ด้านล่าง
+    final uri = Uri.parse('$apiBaseUrl/api/room-detail01/${widget.roomNumber}');
+    try {
+      final res = await http.get(uri).timeout(const Duration(seconds: 12));
+
+      // 🔎 DEBUG: status / headers / body บางส่วน
+      debugPrint('[ROOM-DETAIL] GET $uri -> ${res.statusCode}');
+      debugPrint('[ROOM-DETAIL] headers: ${res.headers}');
+      // ตัด body ให้สั้นลงถ้ายาว
+      final bodyPreview =
+          res.body.length > 600 ? '${res.body.substring(0, 600)}…' : res.body;
+      debugPrint('[ROOM-DETAIL] body: $bodyPreview');
+
+      if (res.statusCode == 200) {
+        final raw = jsonDecode(res.body) as Map<String, dynamic>;
+        debugPrint('[ROOM-DETAIL] keys: ${raw.keys.toList()}');
+        debugPrint('[ROOM-DETAIL] _debug: ${raw['_debug']}');
+        debugPrint(
+            '[ROOM-DETAIL] EquipmentList: ${raw['EquipmentList']} (${(raw['EquipmentList'] as List?)?.length ?? 0})');
+        return RoomDetail.fromJson(raw);
+      } else {
+        debugPrint('[ROOM-DETAIL] non-200: ${res.body}');
       }
-      // fallback ถ้าเรียก API ไม่ทัน/ล้มเหลว
+    } catch (e, st) {
+      debugPrint('❌ [ROOM-DETAIL] API error: $e');
+      debugPrint('↳ stack: $st');
+    }
+
+    // ---- Fallback เฉพาะกรณี API ใช้ไม่ได้จริง ๆ ----
+    final d = widget.data;
+    if (d != null) {
       return RoomDetail(
         roomNumber: d.roomNumber,
         buildingName: d.buildingName,
         status: d.status,
         roomType: d.roomType,
         price: d.price,
-        size: d.size,
+        size: (d.size is num)
+            ? (d.size as num).toDouble()
+            : double.tryParse('${d.size}') ?? 0.0,
         capacity: d.capacity,
-        address: '',
+        address: d.address ?? '',
+        // ยอมว่าง เพราะไม่มีข้อมูลจาก API
         equipments: const [],
         imageUrl: d.imageUrl,
       );
     }
 
-    // ถ้าไม่ได้ส่ง data มา → ดึงจาก API ตรง ๆ
-    final res = await http
-        .get(Uri.parse('$apiBaseUrl/api/room-detail/${widget.roomNumber}'))
-        .timeout(const Duration(seconds: 12));
-    if (res.statusCode != 200) {
-      throw Exception('โหลดรายละเอียดห้องไม่สำเร็จ (${res.statusCode})');
-    }
-    return RoomDetail.fromJson(jsonDecode(res.body));
+    throw Exception('โหลดรายละเอียดห้องไม่สำเร็จ');
+  }
+
+  String fmtSize(double v) {
+    // 25.0 -> "25", 25.5 -> "25.50"
+    return (v == v.roundToDouble())
+        ? v.toStringAsFixed(0)
+        : v.toStringAsFixed(2);
   }
 
   @override
@@ -201,11 +254,9 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
                       ),
                     ),
                   ),
-
                   SliverToBoxAdapter(
                     child: Padding(
-                      padding:
-                          const EdgeInsets.fromLTRB(16, 16, 16, 100),
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -243,7 +294,6 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
                             ],
                           ),
                           const SizedBox(height: 12),
-
                           Wrap(
                             spacing: 10,
                             runSpacing: 10,
@@ -252,7 +302,7 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
                                   icon: Icons.king_bed, label: data.roomType),
                               _InfoChip(
                                   icon: Icons.square_foot,
-                                  label: '${data.size} ตร.ม.'),
+                                  label: '${fmtSize(data.size)} ตร.ม.'),
                               _InfoChip(
                                   icon: Icons.people_alt,
                                   label: 'รองรับ ${data.capacity} คน'),
@@ -263,7 +313,6 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
                             ],
                           ),
                           const SizedBox(height: 18),
-
                           _SectionTitle('อุปกรณ์ภายในห้อง'),
                           const SizedBox(height: 10),
                           _CardContainer(
@@ -293,11 +342,24 @@ class _RoomDetailPageState extends State<RoomDetailPage> {
                 bottom: 24,
                 child: _PrimaryButton(
                   text: 'ติดต่อเจ้าของ',
-                  onTap: () {
-                    // TODO: นำทางไปหน้า Contact Owner
+                  onTap: () async {
+                    final tenantId = await SharedPrefsHelper
+                        .getTenantId(); // อาจเป็น null ได้
+                    if (!mounted) return;
+
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ContactOwnerPage(
+                          tenantId: tenantId, // int? ได้
+                          roomNumber: widget.roomNumber, // โชว์ใน title ได้
+                          buildingName:
+                              data.buildingName, // ใช้โชว์ subtitle ได้
+                        ),
+                      ),
+                    );
                   },
                 ),
-              ),
+              )
             ],
           );
         },

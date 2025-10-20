@@ -1,0 +1,17 @@
+{
+  "watch": ["server.js", "routes", "services", "utils"],
+  "ext": "js,json",
+  "ignore": [
+    "node_modules/**",
+    "uploads/**",
+    "*.log",
+    "logs/**",
+    ".env",
+    "firebase-service-account.json",
+    "schedulers/**",
+    "tmp/**",
+    "dist/**",
+    "build/**"
+  ],
+  "delay": "300"
+}

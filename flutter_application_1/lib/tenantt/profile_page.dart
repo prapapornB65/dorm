@@ -1,17 +1,20 @@
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_application_1/theme/app_theme.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_application_1/auth/login_page.dart';
+import 'package:flutter_application_1/auth/login_page.dart' hide AppColors;
 import 'package:flutter_application_1/config/api_config.dart';
+import 'package:flutter_application_1/widgets/gradient_app_bar.dart';
+import 'package:flutter_application_1/color_app.dart';
+import 'package:flutter_application_1/widgets/app_button.dart'; // ถ้าจะใช้ปุ่มแอป
 
 final url = '$apiBaseUrl/api/some-endpoint';
-
 
 class ProfilePage extends StatefulWidget {
   final int tenantId;
@@ -118,34 +121,27 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Widget _buildProfileInfo(IconData icon, String label, String value) {
-    const primaryColor = Color(0xFF4C7C5A);
-
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: primaryColor, size: 28),
-          const SizedBox(width: 16),
+          Icon(icon, color: AppColors.primaryDark, size: 24),
+          const SizedBox(width: 12),
+          Text(
+            '$label: ',
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w800,
+              fontSize: 16,
+            ),
+          ),
           Expanded(
-            child: RichText(
-              text: TextSpan(
-                text: '$label: ',
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 17,
-                  color: Colors.black87,
-                ),
-                children: [
-                  TextSpan(
-                    text: value,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w400,
-                      fontSize: 16,
-                      color: Colors.black87,
-                    ),
-                  ),
-                ],
+            child: Text(
+              value,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 16,
               ),
             ),
           ),
@@ -156,9 +152,6 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   Widget build(BuildContext context) {
-    const primaryColor = Color(0xFF4C7C5A);
-    final bgColor = Colors.grey.shade100;
-
     // เช็คว่า profileData มี ProfileImage ที่เป็น String และไม่ว่างเปล่า
     bool hasProfileImage = profileData != null &&
         profileData!['ProfileImage'] != null &&
@@ -177,112 +170,94 @@ class _ProfilePageState extends State<ProfilePage> {
 
     print('Displaying profile image URL: ${profileData?['ProfileImage']}');
 
-    return Scaffold(
-      backgroundColor: bgColor,
-      appBar: AppBar(
-        title: const Text('โปรไฟล์'),
-        centerTitle: true,
-        backgroundColor: primaryColor,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Logout',
-            onPressed: () async {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.clear();
-              await FirebaseAuth.instance.signOut(); // ✅ สำคัญ
-
-              Navigator.of(context).pushNamedAndRemoveUntil(
-                '/LoginPage',
-                (Route<dynamic> route) => false,
-              );
-            },
-          ),
-        ],
-      ),
+    return GradientScaffold(
+      appBar: const GradientAppBar(title: 'โปรไฟล์'),
+      topRadius: 0, // ชนหัว ไม่โค้งด้านบน
       body: isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(
+              child: CircularProgressIndicator(color: AppColors.primary))
           : SingleChildScrollView(
               padding: const EdgeInsets.all(20),
               child: Card(
+                color: AppColors.card,
+                elevation: 0,
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16)),
-                elevation: 5,
-                color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  side: const BorderSide(color: AppColors.border),
+                ),
                 child: Padding(
                   padding:
-                      const EdgeInsets.symmetric(vertical: 32, horizontal: 24),
+                      const EdgeInsets.symmetric(vertical: 28, horizontal: 24),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
+                      // Avatar
                       CircleAvatar(
-                        radius: 70,
-                        backgroundColor: Colors.grey.shade300,
-                        backgroundImage: hasProfileImage
-                            ? NetworkImage(imageUri.toString())
+                        radius: 64,
+                        backgroundColor: AppColors.primaryLight,
+                        backgroundImage: (profileData?['ProfileImage']
+                                    is String &&
+                                (profileData!['ProfileImage'] as String)
+                                    .trim()
+                                    .isNotEmpty)
+                            ? NetworkImage(
+                                (profileData!['ProfileImage'] as String)
+                                        .startsWith('http')
+                                    ? profileData!['ProfileImage']
+                                    : Uri.parse(apiBaseUrl)
+                                        .resolve(profileData!['ProfileImage'])
+                                        .toString(),
+                              )
                             : null,
-                        child: hasProfileImage
-                            ? null
-                            : const Icon(Icons.person,
-                                size: 70, color: Colors.white70),
+                        child: (profileData?['ProfileImage'] == null ||
+                                (profileData!['ProfileImage'] as String)
+                                    .trim()
+                                    .isEmpty)
+                            ? const Icon(Icons.person,
+                                size: 64, color: AppColors.textSecondary)
+                            : null,
                       ),
                       const SizedBox(height: 14),
-                      ElevatedButton.icon(
-                        onPressed: isUploading ? null : pickAndUploadImage,
-                        icon: isUploading
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.edit),
-                        label: Text(isUploading
-                            ? 'กำลังอัปโหลด...'
-                            : 'แก้ไขรูปโปรไฟล์'),
-                        style: ElevatedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          backgroundColor: primaryColor,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(30),
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                              vertical: 12, horizontal: 20),
-                          textStyle: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
+
+                      // ปุ่มแก้รูป (ธีมเดียวกัน)
+                      SizedBox(
+                        width: 200,
+                        child: AppButton(
+                          label:
+                              isUploading ? 'กำลังอัปโหลด…' : 'แก้ไขรูปโปรไฟล์',
+                          icon: isUploading ? Icons.hourglass_top : Icons.edit,
+                          onPressed: isUploading ? null : pickAndUploadImage,
+                          height: 46,
+                          radius: 28, // 👈 มุมฉากแบบเดียวกับ square
                         ),
                       ),
-                      const SizedBox(height: 30),
+
+                      const SizedBox(height: 26),
+
+                      // หัวข้อ
                       const Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
                           'ข้อมูลผู้เช่า',
                           style: TextStyle(
-                            color: primaryColor,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w700,
+                            color: AppColors.textPrimary,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
                           ),
                         ),
                       ),
-                      const Divider(
-                        thickness: 2,
-                        color: Color(0xFF4C7C5A),
-                        height: 28,
-                      ),
+                      const SizedBox(height: 10),
+                      const Divider(color: AppColors.border, thickness: 1),
+
+                      // รายการข้อมูล
                       _buildProfileInfo(Icons.person, 'ชื่อ',
-                          '${profileData?['FirstName']} ${profileData?['LastName']}'),
+                          '${profileData?['FirstName'] ?? '-'} ${profileData?['LastName'] ?? ''}'),
                       _buildProfileInfo(Icons.cake, 'วันเกิด',
                           formatDateOnly(profileData?['BirthDate'])),
                       _buildProfileInfo(Icons.phone, 'เบอร์โทร',
-                          profileData?['Phone'] ?? '-'),
+                          profileData?['Phone']?.toString() ?? '-'),
                       _buildProfileInfo(Icons.meeting_room, 'ห้องพัก',
-                          profileData?['RoomNumber'] ?? '-'),
+                          profileData?['RoomNumber']?.toString() ?? '-'),
                       _buildProfileInfo(Icons.date_range, 'เริ่มสัญญาเช่า',
                           formatDateOnly(profileData?['Start'])),
                       _buildProfileInfo(Icons.event_busy, 'สิ้นสุดสัญญาเช่า',

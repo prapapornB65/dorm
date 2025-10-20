@@ -2,6 +2,7 @@ const express = require('express');
 
 module.exports = (db) => {
   const router = express.Router();
+  router.get('/__ping', (req, res) => res.json({ ok: true, who: 'tenant-bundle' }));
 
   // -------- ต้องการ db --------
   router.use(require('./account')(db));
@@ -15,8 +16,8 @@ module.exports = (db) => {
   router.use('/wallet', require('./wallet')(db));
 
   router.use(require('./meters')(db));
-
-  router.use(require('./slipUploadRoute')); 
-  router.use(require('./regis'));           
+  router.use(require('./tenant-usage')(db));
+  router.use(require('./slipUploadRoute')(db));
+  router.use(require('./regis'));
   return router;
 };

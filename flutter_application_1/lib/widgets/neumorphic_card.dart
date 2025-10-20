@@ -8,6 +8,10 @@ class NeumorphicCard extends StatelessWidget {
     this.padding = const EdgeInsets.all(16),
     this.radius = 24,
     this.onTap,
+    this.color,        // ⬅️ กำหนดพื้นหลังได้
+    this.borderColor,  // ⬅️ กำหนดเส้นขอบได้
+    this.showShadow = true, // ⬅️ ปิด/เปิดเงาได้
+    this.margin,
   });
 
   final Widget child;
@@ -15,37 +19,43 @@ class NeumorphicCard extends StatelessWidget {
   final double radius;
   final VoidCallback? onTap;
 
+  final Color? color;
+  final Color? borderColor;
+  final bool showShadow;
+  final EdgeInsetsGeometry? margin;
+
   @override
   Widget build(BuildContext context) {
-    final card = Container(
+    final box = Container(
+      margin: margin,
       padding: padding,
       decoration: BoxDecoration(
-        color: AppColors.card,
+        color: color ?? AppColors.card,
         borderRadius: BorderRadius.circular(radius),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x1A000000), // เงานุ่ม
-            offset: Offset(4, 8),
-            blurRadius: 20,
-            spreadRadius: 0,
-          ),
-          BoxShadow(
-            color: Colors.white,       // ไฮไลท์เบาๆ
-            offset: Offset(-2, -2),
-            blurRadius: 12,
-            spreadRadius: 0,
-          ),
-        ],
-        border: Border.all(color: AppColors.border),
+        boxShadow: showShadow
+            ? const [
+                BoxShadow(
+                  color: Color(0x1A000000),
+                  offset: Offset(0, 8),
+                  blurRadius: 18,
+                ),
+              ]
+            : const [],
+        border: Border.all(color: borderColor ?? AppColors.border),
       ),
       child: child,
     );
 
-    if (onTap == null) return card;
-    return InkWell(
+    // ให้ ripple ทำงานถูกต้อง
+    if (onTap == null) return box;
+    return Material(
+      color: Colors.transparent,
       borderRadius: BorderRadius.circular(radius),
-      onTap: onTap,
-      child: card,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(radius),
+        onTap: onTap,
+        child: box,
+      ),
     );
   }
 }

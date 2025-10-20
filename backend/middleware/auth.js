@@ -1,92 +1,35 @@
-// backend/middleware/auth.js
-require('dotenv').config();
-const { verifyFirebaseIdToken } = require('../auth/verifyFirebaseToken');
+// middleware/auth.js
+const admin = require('firebase-admin');
 
-function getBearer(req) {
+module.exports = (db) => async (req, res, next) => {
   const h = req.headers.authorization || '';
-  const [scheme, token] = h.split(' ');
-  if (scheme?.toLowerCase() === 'bearer' && token) return token;
-  return null;
-}
+  const m = h.match(/^Bearer (.+)$/);
+  if (!m) return res.status(401).json({ error: 'MISSING_BEARER' });
 
-// NOTE: findUserByUID ด้านล่างเป็นเวอร์ชันย่อย
-// ถ้าคุณมีฟังก์ชันนี้อยู่แล้วที่อื่น ให้ import มาใช้แทนได้
-async function findUserByUID(db, uid) {
-  let row = await db.oneOrNone(
-    `SELECT 'tenant' AS role, "TenantID" AS id FROM "Tenant" WHERE "FirebaseUID"=$1`, [uid]);
-  if (row) return row;
-  row = await db.oneOrNone(
-    `SELECT 'owner'  AS role, "OwnerID" AS id FROM "Owner"  WHERE "FirebaseUID"=$1`, [uid]);
-  if (row) return row;
-  row = await db.oneOrNone(
-    `SELECT 'admin'  AS role, "AdminID" AS id FROM "Admin"  WHERE "FirebaseUID"=$1`, [uid]);
-  if (row) return row;
-  return null;
-}
+  try {
+    const decoded = await admin.auth().verifyIdToken(m[1]);
 
-module.exports = (db, options = {}) => {
-  const { requireRole } = options;
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+    // NOTE: ปรับให้ตรงตารางของคุณ (เคยใช้ UserMap/หรือ Users)
+    const u = await db.oneOrNone(`
+      SELECT role,
+             "TenantID" AS "tenantId",
+             "OwnerID"  AS "ownerId"
+      FROM "UserMap"
+      WHERE uid=$1
+    `, [decoded.uid]);
 
-  return async (req, res, next) => {
-    try {
-      const idToken = getBearer(req) || req.body?.idToken || req.query?.idToken;
-      if (!idToken) return res.status(401).json({ error: 'Missing ID token' });
+    if (!u) return res.status(403).json({ error: 'NO_LOCAL_ACCOUNT' });
 
-      const payload = await verifyFirebaseIdToken(idToken, projectId);
-      const uid = payload.user_id || payload.sub;
-
-      const user = await findUserByUID(db, uid);
-      if (!user) return res.status(404).json({ error: 'User not found in DB' });
-
-      req.auth = { uid, role: user.role, id: user.id };
-      if (requireRole && user.role !== requireRole) {
-        return res.status(403).json({ error: 'Forbidden: wrong role' });
-      }
-      next();
-    } catch (err) {
-      console.error('Auth middleware error:', err);
-      return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-  };
-
+    req.user = {
+      uid: decoded.uid,
+      email: decoded.email || null,
+      role: u.role,                    // 'tenant' | 'owner' | 'admin'
+      tenantId: u.tenantId || null,
+      ownerId:  u.ownerId  || null,
+    };
+    next();
+  } catch (e) {
+    console.error('auth error', e);
+    return res.status(401).json({ error: 'INVALID_TOKEN' });
+  }
 };
-
-// backend/middleware/auth.js
-module.exports = (db, options = {}) => {
-  const { requireRole } = options;
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-
-  return async (req, res, next) => {
-    try {
-      const idToken = (req.headers.authorization || '').split(' ')[1] || req.body?.idToken || req.query?.idToken;
-      if (!idToken) return res.status(401).json({ error: 'Missing ID token' });
-
-      const payload = await verifyFirebaseIdToken(idToken, projectId);
-      const uid = payload.user_id || payload.sub;
-
-      // หา role/id ตามเดิม
-      const user = await findUserByUID(db, uid);
-      if (!user) return res.status(404).json({ error: 'User not found in DB' });
-
-      // ✅ ถ้าต้องเป็น tenant ให้เช็ค Status ด้วย
-      if (requireRole === 'tenant') {
-        const st = await db.oneOrNone(`SELECT "Status" FROM "Tenant" WHERE "FirebaseUID"=$1`, [uid]);
-        if (!st || st.Status !== 'approved') {
-          return res.status(403).json({ error: 'Account not approved yet' });
-        }
-      }
-
-      if (requireRole && user.role !== requireRole) {
-        return res.status(403).json({ error: 'Forbidden: wrong role' });
-      }
-
-      req.auth = { uid, role: user.role, id: user.id };
-      next();
-    } catch (err) {
-      console.error('Auth middleware error:', err);
-      return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-  };
-};
-

@@ -23,13 +23,13 @@ class UnitPurchasePage extends StatefulWidget {
 }
 
 class _UnitPurchasePageState extends State<UnitPurchasePage> {
-  String _service = 'water'; // 'water' | 'electric'
-  int _qty = 0;
+  int _qtyWater = 0;
+  int _qtyElectric = 0;
 
-  double get _pricePerUnit =>
-      _service == 'water' ? widget.waterRate : widget.electricRate;
-
-  double get _total => _qty * _pricePerUnit;
+  double get _totalWater   => _qtyWater   * widget.waterRate;
+  double get _totalElectric=> _qtyElectric* widget.electricRate;
+  double get _grandTotal   => _totalWater + _totalElectric;
+  double get _balanceAfter => widget.walletBalance - _grandTotal;
 
   @override
   Widget build(BuildContext context) {
@@ -70,35 +70,38 @@ class _UnitPurchasePageState extends State<UnitPurchasePage> {
 
           const SizedBox(height: 16),
 
-          // Select service
+          // Quantity (ซื้อพร้อมกัน 2 รายการ)
           NeumorphicCard(
             padding: const EdgeInsets.all(18),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('เลือกบริการ',
+                Text('ระบุจำนวนหน่วย',
                     style: TextStyle(
                       color: AppColors.textSecondary,
                       fontWeight: FontWeight.w600,
                     )),
                 const SizedBox(height: 12),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  children: [
-                    _choiceChip(
-                      icon: Icons.water_drop,
-                      label: 'น้ำประปา',
-                      selected: _service == 'water',
-                      onTap: () => setState(() => _service = 'water'),
-                    ),
-                    _choiceChip(
-                      icon: Icons.flash_on,
-                      label: 'ไฟฟ้า',
-                      selected: _service == 'electric',
-                      onTap: () => setState(() => _service = 'electric'),
-                    ),
-                  ],
+
+                // น้ำประปา
+                _lineItem(
+                  icon: Icons.water_drop,
+                  title: 'น้ำประปา',
+                  rate: widget.waterRate,
+                  qty: _qtyWater,
+                  onDec: () => setState(() { if (_qtyWater > 1) _qtyWater--; }),
+                  onInc: () => setState(() { _qtyWater++; }),
+                ),
+                const Divider(color: AppColors.border, height: 24),
+
+                // ไฟฟ้า
+                _lineItem(
+                  icon: Icons.flash_on,
+                  title: 'ไฟฟ้า',
+                  rate: widget.electricRate,
+                  qty: _qtyElectric,
+                  onDec: () => setState(() { if (_qtyElectric > 1) _qtyElectric--; }),
+                  onInc: () => setState(() { _qtyElectric++; }),
                 ),
               ],
             ),
@@ -106,104 +109,42 @@ class _UnitPurchasePageState extends State<UnitPurchasePage> {
 
           const SizedBox(height: 16),
 
-          // Quantity
+          // Summary
           NeumorphicCard(
             padding: const EdgeInsets.all(18),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('จำนวนหน่วย',
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontWeight: FontWeight.w600,
-                    )),
-                const SizedBox(height: 12),
+                _sumRow('ค่าน้ำ (${_qtyWater} หน่วย)', _totalWater),
+                const SizedBox(height: 6),
+                _sumRow('ค่าไฟ (${_qtyElectric} หน่วย)', _totalElectric),
+                const SizedBox(height: 10),
+                const Divider(color: AppColors.border),
+                const SizedBox(height: 10),
+                _sumRow('รวมทั้งหมด', _grandTotal, bold: true),
+                const SizedBox(height: 6),
                 Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    _qtyBtn(Icons.remove, onTap: () {
-                      setState(() {
-                        if (_qty > 1) _qty--;
-                      });
-                    }),
-                    const Spacer(),
-                    Text('$_qty',
-                        style: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 26,
-                          fontWeight: FontWeight.w900,
+                    Text('คงเหลือหลังหัก',
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontWeight: FontWeight.w600,
                         )),
-                    const Spacer(),
-                    _qtyBtn(Icons.add, onTap: () {
-                      setState(() {
-                        _qty++;
-                      });
-                    }),
+                    Text(
+                      '฿ ${_balanceAfter.toStringAsFixed(2)}',
+                      style: TextStyle(
+                        color: _balanceAfter >= 0
+                            ? AppColors.textPrimary
+                            : Colors.red.shade400,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 18,
+                      ),
+                    ),
                   ],
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'ราคา/หน่วย: ฿ ${_pricePerUnit.toStringAsFixed(2)}',
-                  style: TextStyle(color: AppColors.textSecondary),
                 ),
               ],
             ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // Price summary
-          Row(
-            children: [
-              Expanded(
-                child: NeumorphicCard(
-                  padding: const EdgeInsets.all(18),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('รวมทั้งหมด',
-                          style: TextStyle(
-                            color: AppColors.textSecondary,
-                            fontWeight: FontWeight.w600,
-                          )),
-                      const SizedBox(height: 6),
-                      Text('฿ ${_total.toStringAsFixed(2)}',
-                          style: const TextStyle(
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w900,
-                            fontSize: 20,
-                          )),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: NeumorphicCard(
-                  padding: const EdgeInsets.all(18),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('คงเหลือหลังหัก',
-                          style: TextStyle(
-                            color: AppColors.textSecondary,
-                            fontWeight: FontWeight.w600,
-                          )),
-                      const SizedBox(height: 6),
-                      Text(
-                        '฿ ${(widget.walletBalance - _total).toStringAsFixed(2)}',
-                        style: TextStyle(
-                          color: (widget.walletBalance - _total) >= 0
-                              ? AppColors.textPrimary
-                              : Colors.red.shade400,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 20,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
           ),
 
           const SizedBox(height: 20),
@@ -213,8 +154,13 @@ class _UnitPurchasePageState extends State<UnitPurchasePage> {
             label: 'ยืนยันการซื้อ',
             icon: Icons.lock_outline,
             onPressed: () {
-              // ✅ ดีไซน์เท่านั้น: ให้หน้า caller ตัดสินใจต่อเมื่อ pop(true)
-              if (widget.walletBalance - _total < 0) {
+              if (_qtyWater == 0 && _qtyElectric == 0) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('กรุณาเลือกจำนวนหน่วยอย่างน้อย 1 รายการ')),
+                );
+                return;
+              }
+              if (_balanceAfter < 0) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: const Text('ยอดเงินไม่พอ กรุณาเติมเงินก่อนนะครับ'),
@@ -223,6 +169,9 @@ class _UnitPurchasePageState extends State<UnitPurchasePage> {
                 );
                 return;
               }
+
+              // ✅ ตอนนี้ยังคงส่งค่า true กลับไปเหมือนเดิมเพื่อไม่พังหน้าเรียก
+              // ถ้าภายหลังอยากส่งรายละเอียด ให้เปลี่ยนเป็น pop({...})
               Navigator.pop(context, true);
             },
           ),
@@ -231,36 +180,71 @@ class _UnitPurchasePageState extends State<UnitPurchasePage> {
     );
   }
 
-  // ---------- UI Helpers ----------
+  // ---------- UI helpers ----------
 
-  Widget _choiceChip({
+  Widget _lineItem({
     required IconData icon,
-    required String label,
-    required bool selected,
-    required VoidCallback onTap,
+    required String title,
+    required double rate,
+    required int qty,
+    required VoidCallback onDec,
+    required VoidCallback onInc,
   }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: selected ? AppColors.primary : AppColors.primaryLight,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border),
+    return Row(
+      children: [
+        _badge(icon),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                  )),
+              const SizedBox(height: 2),
+              Text('ราคา/หน่วย: ฿ ${rate.toStringAsFixed(2)}',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ],
+          ),
         ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, color: selected ? Colors.white : AppColors.primary),
-          const SizedBox(width: 8),
-          Text(
-            label,
-            style: TextStyle(
-              color: selected ? Colors.white : AppColors.textPrimary,
-              fontWeight: FontWeight.w700,
+        _qtyBtn(Icons.remove, onTap: onDec),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            '$qty',
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
             ),
           ),
-        ]),
-      ),
+        ),
+        _qtyBtn(Icons.add, onTap: onInc),
+      ],
+    );
+  }
+
+  Widget _sumRow(String label, double value, {bool bold = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label,
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
+            )),
+        Text(
+          '฿ ${value.toStringAsFixed(2)}',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontWeight: bold ? FontWeight.w900 : FontWeight.w800,
+            fontSize: bold ? 18 : 16,
+          ),
+        ),
+      ],
     );
   }
 
@@ -269,8 +253,8 @@ class _UnitPurchasePageState extends State<UnitPurchasePage> {
       borderRadius: BorderRadius.circular(14),
       onTap: onTap,
       child: Container(
-        width: 48,
-        height: 48,
+        width: 42,
+        height: 42,
         decoration: BoxDecoration(
           color: AppColors.primaryLight,
           borderRadius: BorderRadius.circular(14),

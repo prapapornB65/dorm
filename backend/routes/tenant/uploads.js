@@ -47,10 +47,20 @@ module.exports = (db) => {
     try {
       // กันสลิปซ้ำ (ตาม ImagePath + TenantID)
       const exists = await db.oneOrNone(`
-        SELECT 1 FROM public."SlipUpload" WHERE "TenantID"=$1 AND "ImagePath"=$2
-      `, [tenantId, ImagePath]);
-      if (exists) return res.status(400).json({ error: true, message: 'สลิปนี้ถูกส่งแล้ว (ซ้ำ)' });
+  SELECT "UploadDate" FROM public."SlipUpload"
+  WHERE "TenantID"=$1 AND "ImagePath"=$2
+`, [tenantId, ImagePath]);
 
+      if (exists) {
+        // ✅ ส่ง ISO (หรือจะส่ง epoch ก็ได้)
+        return res.status(409).json({
+          error: true,
+          code: 'DUP_SLIP',
+          message: 'สลิปนี้ถูกส่งแล้ว',
+          when: new Date(exists.UploadDate).toISOString()   // <── ISO8601
+          // หรือส่ง whenEpoch: new Date(exists.UploadDate).getTime()
+        });
+      }
       // 1) Payment
       const payment = await db.one(`
         INSERT INTO public."Payment" ("TenantID","PaymentDate","TotalAmount","PaymentMethod","Status")

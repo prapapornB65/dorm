@@ -12,6 +12,7 @@ import 'package:flutter_application_1/theme/app_theme.dart';
 import 'package:flutter_application_1/widgets/neumorphic_card.dart';
 import 'package:flutter_application_1/widgets/app_button.dart';
 import 'package:flutter_application_1/color_app.dart';
+import 'package:flutter_application_1/widgets/gradient_app_bar.dart';
 
 final url = '$apiBaseUrl/api/some-endpoint';
 
@@ -47,7 +48,8 @@ class _ServicePageState extends State<ServicePage> {
   }
 
   Future<void> fetchTenantService() async {
-    final uri = Uri.parse('$apiBaseUrl/api/tenant-room-detail/${widget.tenantId}');
+    final uri =
+        Uri.parse('$apiBaseUrl/api/tenant-room-detail/${widget.tenantId}');
     try {
       final response = await http.get(uri);
       debugPrint('📦 Raw response: ${response.body}');
@@ -124,49 +126,18 @@ class _ServicePageState extends State<ServicePage> {
   @override
   Widget build(BuildContext context) {
     return GradientScaffold(
-      appBar: AppBar(
-        title: const Text('การบริการ'),
-        centerTitle: true,
-        actions: [
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            color: AppColors.card,
-            onSelected: (value) {
-              if (value == 'repair') {
-                setState(() => selectedSection = value);
-              } else if (value == 'contact') {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => ContactOwnerPage(tenantId: widget.tenantId),
-                  ),
-                );
-              } else if (value == 'history') {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => UsageHistoryPage(tenantId: widget.tenantId),
-                  ),
-                );
-              }
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'repair', child: Text('แจ้งซ่อม')),
-              PopupMenuItem(value: 'contact', child: Text('ติดต่อเจ้าของหอพัก')),
-              PopupMenuItem(value: 'history', child: Text('ประวัติการใช้งาน')),
-            ],
-          ),
-        ],
-      ),
+      appBar: const GradientAppBar(
+          title: 'การบริการ'), // ✅ หัวแบบไล่สีเหมือนหน้าอื่น
+      topRadius: 0, // ✅ ชนขอบบน ไม่โค้ง
       body: isLoading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          ? const Center(
+              child: CircularProgressIndicator(color: AppColors.primary))
           : SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildRepairForm(),
-
                   const SizedBox(height: 24),
                   Row(
                     children: [
@@ -181,19 +152,19 @@ class _ServicePageState extends State<ServicePage> {
                       const Spacer(),
                       if (repairHistory.length > 5 && !_showAllRepairs)
                         TextButton(
-                          onPressed: () => setState(() => _showAllRepairs = true),
+                          onPressed: () =>
+                              setState(() => _showAllRepairs = true),
                           child: const Text('ดูทั้งหมด'),
                         ),
                       if (_showAllRepairs && repairHistory.length > 5)
                         TextButton(
-                          onPressed: () => setState(() => _showAllRepairs = false),
+                          onPressed: () =>
+                              setState(() => _showAllRepairs = false),
                           child: const Text('ย่อ'),
                         ),
                     ],
                   ),
                   const SizedBox(height: 10),
-
-                  // ✅ แสดงสูงสุด 5 รายการก่อน ถ้ามีมากกว่าให้กด "ดูทั้งหมด"
                   ..._visibleRepairs().map((repair) {
                     final status = (repair['status'] ?? '-') as String;
                     final isDone = status == 'เสร็จ';
@@ -208,7 +179,8 @@ class _ServicePageState extends State<ServicePage> {
                               color: AppColors.primaryLight,
                               borderRadius: BorderRadius.circular(14),
                             ),
-                            child: const Icon(Icons.build, color: AppColors.primary),
+                            child: const Icon(Icons.build,
+                                color: AppColors.primary),
                           ),
                           title: Text(
                             repair['equipment'] ?? '',
@@ -219,7 +191,7 @@ class _ServicePageState extends State<ServicePage> {
                           ),
                           subtitle: Text(
                             'วันที่แจ้ง: ${formatDate(repair['requestdate'] ?? '')}',
-                            style: TextStyle(
+                            style: const TextStyle(
                               color: AppColors.textSecondary,
                               fontSize: 12,
                             ),
@@ -243,6 +215,20 @@ class _ServicePageState extends State<ServicePage> {
 
   // ---------- UI เฉพาะฟอร์ม (เปลี่ยนแต่ดีไซน์ ไม่แตะ logic) ----------
   Widget _buildRepairForm() {
+    // คำนวณค่าให้ dropdown แบบปลอดภัยทุกครั้งที่ build
+    final equipments = availableEquipments;
+    final String? currentEquip =
+        (equipments.contains(selectedEquipment) && selectedEquipment.isNotEmpty)
+            ? selectedEquipment
+            : (equipments.isNotEmpty ? equipments.first : null);
+
+    final List<String> symptomItems =
+        symptomMap[currentEquip ?? ''] ?? const <String>[];
+    final String? currentSymptom =
+        (symptomItems.contains(selectedSymptom) && selectedSymptom.isNotEmpty)
+            ? selectedSymptom
+            : (symptomItems.isNotEmpty ? symptomItems.first : null);
+
     return NeumorphicCard(
       padding: const EdgeInsets.all(18),
       child: Column(
@@ -260,25 +246,29 @@ class _ServicePageState extends State<ServicePage> {
           // ชื่ออุปกรณ์
           Row(
             children: [
-              Text('ชื่ออุปกรณ์ : ', style: TextStyle(color: AppColors.textSecondary)),
+              Text('ชื่ออุปกรณ์ : ',
+                  style: TextStyle(color: AppColors.textSecondary)),
               const SizedBox(width: 8),
               Expanded(
                 child: _dropdownShell(
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
-                      value: selectedEquipment.isEmpty && availableEquipments.isNotEmpty
-                          ? availableEquipments.first
-                          : selectedEquipment,
                       isExpanded: true,
+                      value: currentEquip, // ← อนุญาตให้เป็น null
+                      hint: const Text('เลือกอุปกรณ์'),
+                      items: equipments
+                          .map(
+                              (e) => DropdownMenuItem(value: e, child: Text(e)))
+                          .toList(),
                       onChanged: (value) {
                         setState(() {
                           selectedEquipment = value ?? '';
-                          selectedSymptom = symptomMap[selectedEquipment]?.first ?? '';
+                          final nextSymptoms =
+                              symptomMap[selectedEquipment] ?? const <String>[];
+                          selectedSymptom =
+                              nextSymptoms.isNotEmpty ? nextSymptoms.first : '';
                         });
                       },
-                      items: availableEquipments
-                          .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                          .toList(),
                     ),
                   ),
                 ),
@@ -290,18 +280,24 @@ class _ServicePageState extends State<ServicePage> {
           // อาการชำรุด
           Row(
             children: [
-              Text('อาการชำรุด : ', style: TextStyle(color: AppColors.textSecondary)),
+              Text('อาการชำรุด : ',
+                  style: TextStyle(color: AppColors.textSecondary)),
               const SizedBox(width: 8),
               Expanded(
                 child: _dropdownShell(
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
-                      value: selectedSymptom,
                       isExpanded: true,
-                      onChanged: (value) => setState(() => selectedSymptom = value ?? ''),
-                      items: (symptomMap[selectedEquipment] ?? [])
-                          .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                      value: currentSymptom, // ← อนุญาตให้เป็น null
+                      hint: const Text('เลือกอาการ'),
+                      items: symptomItems
+                          .map(
+                              (s) => DropdownMenuItem(value: s, child: Text(s)))
                           .toList(),
+                      onChanged: symptomItems.isEmpty
+                          ? null // ไม่มีตัวเลือก → ปิดเมนู
+                          : (value) =>
+                              setState(() => selectedSymptom = value ?? ''),
                     ),
                   ),
                 ),
@@ -327,9 +323,7 @@ class _ServicePageState extends State<ServicePage> {
           const SizedBox(height: 6),
           TextField(
             controller: phoneController,
-            decoration: const InputDecoration(
-              labelText: 'เบอร์โทร',
-            ),
+            decoration: const InputDecoration(labelText: 'เบอร์โทร'),
             keyboardType: TextInputType.phone,
           ),
           const SizedBox(height: 12),
@@ -337,7 +331,7 @@ class _ServicePageState extends State<ServicePage> {
           // วันที่
           Text(
             'วันที่แจ้งซ่อม : ${DateFormat('dd/MM/yyyy').format(DateTime.now())}',
-            style: TextStyle(
+            style: const TextStyle(
               color: AppColors.textSecondary,
               fontWeight: FontWeight.w600,
             ),

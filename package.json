@@ -5,6 +5,7 @@
     "dotenv": "^17.2.2",
     "jose": "^6.0.12",
     "multer": "^2.0.1",
+    "node-cron": "^4.2.1",
     "rmdir": "^1.2.0"
   },
   "name": "appdorm",

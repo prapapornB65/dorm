@@ -43,7 +43,10 @@ dependencies:
   firebase_auth: ^4.19.0 # อัปเดตเป็นเวอร์ชันนี้ (หรือสูงกว่า)
   google_sign_in: ^6.2.1 # อัปเดตเป็นเวอร์ชันนี้ (หรือสูงกว่า)
   cloud_firestore: ^4.17.5 # อัปเดตเป็นเวอร์ชันนี้ (หรือสูงกว่า)
+  fl_chart: ^0.66.2
+  intl: ^0.19.0
 
+  
 dev_dependencies:
   flutter_test:
     sdk: flutter

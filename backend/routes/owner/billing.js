@@ -1,22 +1,65 @@
-// routes/billing.js
+// routes/owner/billing.js
 const express = require('express');
 
 module.exports = (db) => {
-    const router = express.Router();
+  const router = express.Router();
 
-    // routes/billing.js (ส่วนของ /bills)
-    router.get('/building/:id/bills', async (req, res) => {
-        const buildingId = Number(req.params.id);
-        const month = (req.query.month || '').toString().slice(0, 7); // YYYY-MM
-        if (!Number.isInteger(buildingId) || buildingId <= 0) {
-            return res.status(400).json({ error: 'invalid building id' });
-        }
-        if (!/^\d{4}-\d{2}$/.test(month)) {
-            return res.status(400).json({ error: 'month required as YYYY-MM' });
-        }
+  // --------- MIDDLEWARE ----------
+  router.use(express.json());
 
-        try {
-            const rows = await db.any(`
+  // --------- HELPERS ----------
+  const DEFAULT_AUTOBILL_CFG = {
+    mode: 'combined',                         // หรือ 'split'
+    prepay_required: true,
+    cutoff_when_insufficient: true,
+    cut_targets: { room: true, power: true, water: true },
+    notify_days_before: 3,
+    grace_days: 0,
+    // โหมด combined
+    cut_day: 1,
+    run_at_time: '02:00',
+    timezone: 'Asia/Bangkok',
+    next_run_at: null,
+  };
+
+  function computeNextRun(cfg) {
+    try {
+      const cutDay = Number(cfg.cut_day || 1);
+      const [hh, mm] = String(cfg.run_at_time || '02:00')
+        .split(':')
+        .map((n) => Number(n || 0));
+      const now = new Date();
+      const next = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        cutDay,
+        hh,
+        mm,
+        0,
+        0
+      );
+      if (next <= now) next.setMonth(next.getMonth() + 1);
+      return next.toISOString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ---------- BILLS (สรุปบิลรายห้องของตึกในเดือนที่เลือก) ----------
+  // GET /api/owner/building/:id/bills?month=YYYY-MM
+  router.get('/building/:id/bills', async (req, res) => {
+    const buildingId = Number(req.params.id);
+    const month = (req.query.month || '').toString().slice(0, 7); // YYYY-MM
+    if (!Number.isInteger(buildingId) || buildingId <= 0) {
+      return res.status(400).json({ error: 'invalid building id' });
+    }
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'month required as YYYY-MM' });
+    }
+
+    try {
+      const rows = await db.any(
+        `
       WITH pay AS (
         SELECT
           t."RoomNumber" AS "RoomNumber",
@@ -88,28 +131,31 @@ module.exports = (db) => {
              ON ct."RoomNumber" = r."RoomNumber"
       WHERE r."BuildingID" = $1
       ORDER BY r."RoomNumber" ASC
-    `, [buildingId, month]);
+    `,
+        [buildingId, month]
+      );
 
-            res.json(rows);
-        } catch (e) {
-            console.error('GET /building/:id/bills error', e);
-            res.status(500).json({ error: 'DB_ERROR' });
-        }
-    });
+      res.json(rows);
+    } catch (e) {
+      console.error('GET /building/:id/bills error', e);
+      res.status(500).json({ error: 'DB_ERROR' });
+    }
+  });
 
+  // GET /api/owner/building/:id/bills-stats?month=YYYY-MM
+  router.get('/building/:id/bills-stats', async (req, res) => {
+    const buildingId = Number(req.params.id);
+    const month = (req.query.month || '').toString().slice(0, 7);
+    if (!Number.isInteger(buildingId) || buildingId <= 0) {
+      return res.status(400).json({ error: 'invalid building id' });
+    }
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'month required as YYYY-MM' });
+    }
 
-    router.get('/building/:id/bills-stats', async (req, res) => {
-  const buildingId = Number(req.params.id);
-  const month = (req.query.month || '').toString().slice(0,7);
-  if (!Number.isInteger(buildingId) || buildingId <= 0) {
-    return res.status(400).json({ error: 'invalid building id' });
-  }
-  if (!/^\d{4}-\d{2}$/.test(month)) {
-    return res.status(400).json({ error: 'month required as YYYY-MM' });
-  }
-
-  try {
-    const rows = await db.any(`
+    try {
+      const rows = await db.any(
+        `
       WITH pay AS (
         SELECT
           t."RoomNumber" AS "RoomNumber",
@@ -155,15 +201,155 @@ module.exports = (db) => {
       LEFT JOIN pay  p ON p."RoomNumber" = r."RoomNumber" AND p.ym = $2
       LEFT JOIN base b ON b."RoomNumber" = r."RoomNumber"
       WHERE r."BuildingID" = $1
-    `, [buildingId, month]);
+    `,
+        [buildingId, month]
+      );
 
-    res.json(rows?.[0] || { dueRent: 0, dueElectric: 0, dueWater: 0 });
-  } catch (e) {
-    console.error('GET /building/:id/bills-stats error', e);
-    res.status(500).json({ error: 'DB_ERROR' });
-  }
-});
+      res.json(rows?.[0] || { dueRent: 0, dueElectric: 0, dueWater: 0 });
+    } catch (e) {
+      console.error('GET /building/:id/bills-stats error', e);
+      res.status(500).json({ error: 'DB_ERROR' });
+    }
+  });
 
+  // ---------- AUTO-BILLING CONFIG ----------
+  // GET /api/owner/:buildingId/auto-billing/config
+  router.get('/:buildingId/auto-billing/config', async (req, res) => {
+    const buildingId = Number(req.params.buildingId);
+    if (!Number.isInteger(buildingId) || buildingId <= 0) {
+      return res.status(400).json({ error: 'invalid building id' });
+    }
+    try {
+      const rows = await db.any(
+        `SELECT config_json FROM auto_billing_config WHERE building_id = $1 LIMIT 1`,
+        [buildingId]
+      );
 
-    return router;
+      if (!rows.length) {
+        const cfg = {
+          ...DEFAULT_AUTOBILL_CFG,
+          next_run_at: computeNextRun(DEFAULT_AUTOBILL_CFG),
+        };
+        return res.status(200).json(cfg);
+      }
+
+      const cfg = rows[0].config_json || {};
+      if (!cfg.next_run_at) cfg.next_run_at = computeNextRun(cfg);
+      return res.status(200).json(cfg);
+    } catch (e) {
+      console.error('GET /auto-billing/config error:', e);
+      // อย่าปล่อยให้ timeout ทำ UX แย่ — ตอบ default กลับไปก่อน
+      const cfg = {
+        ...DEFAULT_AUTOBILL_CFG,
+        next_run_at: computeNextRun(DEFAULT_AUTOBILL_CFG),
+      };
+      return res.status(200).json(cfg);
+    }
+  });
+
+  // PUT /api/owner/:buildingId/auto-billing/config
+  router.put('/:buildingId/auto-billing/config', async (req, res) => {
+    const buildingId = Number(req.params.buildingId);
+    if (!Number.isInteger(buildingId) || buildingId <= 0) {
+      return res.status(400).json({ error: 'invalid building id' });
+    }
+
+    const cfg =
+      req.body && typeof req.body === 'object' ? req.body : DEFAULT_AUTOBILL_CFG;
+    cfg.next_run_at = computeNextRun(cfg);
+
+    try {
+      await db.none(
+        `INSERT INTO auto_billing_config (building_id, config_json, updated_at)
+         VALUES ($1, $2, now())
+         ON CONFLICT (building_id)
+         DO UPDATE SET config_json = EXCLUDED.config_json,
+                       updated_at  = now()`,
+        [buildingId, cfg]
+      );
+      return res.status(200).json({ config: cfg });
+    } catch (e) {
+      console.error('PUT /auto-billing/config error:', e);
+      return res.status(500).json({ error: 'save_failed' });
+    }
+  });
+
+  // POST /api/owner/:buildingId/auto-billing/simulate
+  router.post('/:buildingId/auto-billing/simulate', async (req, res) => {
+    const buildingId = Number(req.params.buildingId);
+    if (!Number.isInteger(buildingId) || buildingId <= 0) {
+      return res.status(400).json({ error: 'invalid building id' });
+    }
+    try {
+      // ตัวอย่าง: คืนรายการห้องทั้งหมดของอาคารนั้น
+      // (เวอร์ชัน production: job scheduler จะอ่าน config แล้วสร้าง/อัปเดตใบแจ้งหนี้จริง)
+      const rooms = await db.any(
+        `SELECT r."RoomNumber"
+           FROM "Room" r
+          WHERE r."BuildingID" = $1
+          ORDER BY r."RoomNumber"`,
+        [buildingId]
+      );
+      return res
+        .status(200)
+        .json({ result: rooms.map((r) => ({ room: r.RoomNumber })) });
+    } catch (e) {
+      console.error('POST /auto-billing/simulate error:', e);
+      return res.status(500).json({ error: 'simulate_failed' });
+    }
+  });
+
+  // (ออปชันสำหรับอนาคต) PREVIEW บิลเดือนที่ระบุ
+  // POST /api/owner/:buildingId/auto-billing/preview?month=YYYY-MM
+  router.post('/:buildingId/auto-billing/preview', async (req, res) => {
+    const buildingId = Number(req.params.buildingId);
+    const month = (req.query.month || '').toString().slice(0, 7);
+    if (!Number.isInteger(buildingId) || buildingId <= 0) {
+      return res.status(400).json({ error: 'invalid building id' });
+    }
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'month required as YYYY-MM' });
+    }
+
+    try {
+      // ตัวอย่าง: แค่ดึง rooms เพื่อ preview
+      const rooms = await db.any(
+        `SELECT r."RoomNumber"
+           FROM "Room" r
+          WHERE r."BuildingID" = $1
+          ORDER BY r."RoomNumber"`,
+        [buildingId]
+      );
+      return res.status(200).json({
+        month,
+        items: rooms.map((r) => ({ room: r.RoomNumber, amount: 0 })),
+      });
+    } catch (e) {
+      console.error('POST /auto-billing/preview error:', e);
+      return res.status(500).json({ error: 'preview_failed' });
+    }
+  });
+
+  // (ออปชันสำหรับอนาคต) CHARGE บิลเดือนที่ระบุ
+  // POST /api/owner/:buildingId/auto-billing/charge?month=YYYY-MM
+  router.post('/:buildingId/auto-billing/charge', async (req, res) => {
+    const buildingId = Number(req.params.buildingId);
+    const month = (req.query.month || '').toString().slice(0, 7);
+    if (!Number.isInteger(buildingId) || buildingId <= 0) {
+      return res.status(400).json({ error: 'invalid building id' });
+    }
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'month required as YYYY-MM' });
+    }
+
+    try {
+      // TODO: ตัดเงิน/สร้าง Payment จริงในอนาคต
+      return res.status(200).json({ ok: true, month });
+    } catch (e) {
+      console.error('POST /auto-billing/charge error:', e);
+      return res.status(500).json({ error: 'charge_failed' });
+    }
+  });
+
+  return router;
 };

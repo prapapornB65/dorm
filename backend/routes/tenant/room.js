@@ -4,7 +4,7 @@ const express = require('express');
 module.exports = (db) => {
   const router = express.Router();
 
-  // GET /api/tenant-room/:tenantId
+  // GET /tenant-room/:tenantId
   router.get('/tenant-room/:tenantId', async (req, res) => {
     const tenantId = Number(req.params.tenantId);
     if (!Number.isInteger(tenantId)) return res.status(400).json({ error: 'tenantId ต้องเป็นตัวเลข' });
@@ -18,87 +18,99 @@ module.exports = (db) => {
       res.status(500).json({ error: 'เกิดข้อผิดพลาดฝั่งเซิร์ฟเวอร์' });
     }
   });
-
-  // GET /api/room-detail/:RoomNumber
-  router.get('/room-detail/:RoomNumber', async (req, res) => {
+  // GET /room-detail/:RoomNumber
+  router.get('/room-detail01/:RoomNumber', async (req, res) => {
+    console.log('[ROOM-DETAIL v2] file=%s pid=%s at=%s Room=%s',
+    __filename, process.pid, new Date().toISOString(), req.params.RoomNumber);
     const RoomNumber = req.params.RoomNumber;
+
     try {
       const room = await db.oneOrNone(`
-        SELECT 
-          r."RoomNumber",
-          r."Address",
-          r."Capacity",
-          r."Status",
-          rt."TypeName" AS "RoomType",
-          rt."PricePerMonth" AS "Price",
-          rt."Description" AS "RoomTypeDesc",
-          r."BuildingID",
-          b."BuildingName",
-          b."Address" AS "BuildingAddress",
-          b."QrCodeUrl",
-          t."FirstName",
-          t."LastName",
-          t."Start",
-          r."Size"
-        FROM public."Room" r
-        LEFT JOIN public."RoomType" rt ON r."RoomTypeID" = rt."RoomTypeID"
-        LEFT JOIN public."Building" b ON r."BuildingID" = b."BuildingID"
-        LEFT JOIN public."Tenant" t ON t."RoomNumber" = r."RoomNumber"
-        WHERE r."RoomNumber" = $1
-      `, [RoomNumber]);
+      SELECT 
+        r."RoomNumber",
+        r."Address",
+        r."Capacity",
+        r."Status",
+        rt."TypeName"       AS "RoomType",
+        rt."PricePerMonth"  AS "Price",
+        rt."Description"    AS "RoomTypeDesc",
+        r."BuildingID",
+        b."BuildingName",
+        b."Address"         AS "BuildingAddress",
+        b."QrCodeUrl",
+        r."Size",
+
+        /* ✅ ดึงรายการอุปกรณ์เป็น JSON array ของ string */
+        COALESCE(
+          (
+            SELECT json_agg(e."EquipmentName" ORDER BY e."EquipmentName")
+            FROM "RoomEquipment" re
+            JOIN "Equipment" e ON e."EquipmentID" = re."EquipmentID"
+            WHERE re."RoomNumber" = r."RoomNumber"
+          ),
+          '[]'::json
+        ) AS "EquipmentList"
+      FROM "Room" r
+      LEFT JOIN "RoomType" rt ON r."RoomTypeID" = rt."RoomTypeID"
+      LEFT JOIN "Building" b  ON r."BuildingID" = b."BuildingID"
+      WHERE r."RoomNumber" = $1
+      LIMIT 1
+    `, [RoomNumber]);
 
       if (!room) return res.status(404).json({ error: 'ไม่พบห้องนี้' });
 
-      const equipments = await db.any(`
-        SELECT e."EquipmentName"
-        FROM public."RoomEquipment" re
-        JOIN public."Equipment" e ON re."EquipmentID" = e."EquipmentID"
-        WHERE re."RoomNumber" = $1
-        ORDER BY e."EquipmentName"
-      `, [RoomNumber]);
+      // ล็อกดีบักให้เห็นชัด ๆ
+      console.log('[ROOM-DETAIL] room =', RoomNumber, 'Size=', room.Size, 'EquipmentList len=', (room.EquipmentList || []).length);
 
-      room.EquipmentList = equipments.map(e => e.EquipmentName);
       res.json(room);
     } catch (e) {
-      console.error(e);
+      console.error('❌ /room-detail error:', e);
       res.status(500).json({ error: e.message });
     }
   });
 
+
+  // GET /tenant-room-detail/:tenantId
   router.get('/tenant-room-detail/:tenantId', async (req, res) => {
-    const tenantId = parseInt(req.params.tenantId);
+    const tenantId = Number(req.params.tenantId);
+    if (!Number.isInteger(tenantId)) {
+      return res.status(400).json({ error: 'tenantId ต้องเป็นตัวเลข' });
+    }
     try {
-      const tenant = await db.oneOrNone(`
-        SELECT 
-          t."TenantID", t."FirstName", t."LastName", t."Phone",
-          t."RoomNumber",
-          r."Status" AS room_status,
-          b."BuildingName",
-          b."QrCodeUrl",
-          t."Start",
-          r."Size"
-        FROM "Tenant" t
-        LEFT JOIN "Room" r ON t."RoomNumber" = r."RoomNumber"
-        LEFT JOIN "Building" b ON r."BuildingID" = b."BuildingID"
-        WHERE t."TenantID" = $1
-      `, [tenantId]);
+      const row = await db.oneOrNone(`
+      SELECT 
+        t."TenantID", t."FirstName", t."LastName", t."Phone",
+        t."RoomNumber",
+        r."Status" AS room_status,
+        b."BuildingName",
+        b."QrCodeUrl",
+        -- ✅ ใช้ SQL แปลงเป็น ISO 8601
+        to_char(t."Start" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "StartISO",
+        r."Size",
+        rt."PricePerMonth" AS "PricePerMonth"
+      FROM "Tenant" t
+      LEFT JOIN "Room" r       ON t."RoomNumber" = r."RoomNumber"
+      LEFT JOIN "Building" b   ON r."BuildingID" = b."BuildingID"
+      LEFT JOIN "RoomType" rt  ON r."RoomTypeID" = rt."RoomTypeID"
+      WHERE t."TenantID" = $1
+    `, [tenantId]);
 
-      if (!tenant) return res.status(404).json({ error: 'ไม่พบผู้เช่า' });
+      if (!row) return res.status(404).json({ error: 'ไม่พบผู้เช่า' });
 
+      // (โหลด repairs/equipments/symptomMap ตามของเดิมคุณ)
       const repairs = await db.any(`
-        SELECT 
-          "Equipment"   AS equipment, 
-          "IssueDetail" AS issuedetail, 
-          "Phone"       AS phone, 
-          "RequestDate" AS requestdate, 
-          "Status"      AS status
-        FROM "RepairRequest"
-        WHERE "TenantID" = $1
-        ORDER BY "RequestDate" DESC
-      `, [tenantId]);
+      SELECT 
+        "Equipment"   AS equipment, 
+        "IssueDetail" AS issuedetail, 
+        "Phone"       AS phone, 
+        "RequestDate" AS requestdate, 
+        "Status"      AS status
+      FROM "RepairRequest"
+      WHERE "TenantID" = $1
+      ORDER BY "RequestDate" DESC
+    `, [tenantId]);
 
       const equipments = await db.any(`SELECT "EquipmentName" FROM "Equipment" ORDER BY "EquipmentName"`);
-
       const symptomRaw = await db.any(`SELECT "EquipmentName","Symptom" FROM "SymptomMap"`);
       const symptomMap = {};
       symptomRaw.forEach(({ EquipmentName, Symptom }) => {
@@ -106,21 +118,21 @@ module.exports = (db) => {
         symptomMap[EquipmentName].push(Symptom);
       });
 
-      // ✅ สำคัญ: โครงสร้าง field ที่ Flutter อ่านใน TenantRoomOverview.fromJson()
       res.json({
         tenant: {
-          TenantID: tenant.TenantID,
-          FirstName: tenant.FirstName,
-          LastName: tenant.LastName,
-          Phone: tenant.Phone,
-          RoomNumber: tenant.RoomNumber,
-          BuildingName: tenant.BuildingName,
-          room_status: tenant.room_status,
-          QrCodeUrl: tenant.QrCodeUrl,
-          Start: tenant.Start,
-          Size: tenant.Size,
-          // ไม่จำเป็นต้องส่ง price/maintenanceCost ก็ได้ (Flutter handle null)
+          TenantID: row.TenantID,
+          FirstName: row.FirstName,
+          LastName: row.LastName,
+          Phone: row.Phone,
+          RoomNumber: row.RoomNumber,
+          BuildingName: row.BuildingName,
+          room_status: row.room_status,
+          QrCodeUrl: row.QrCodeUrl,
+          Start: row.StartISO || null,   // ✅ ใช้ค่าที่ SELECT มาจริง
+          Size: row.Size,
         },
+        price: row.PricePerMonth ?? null,
+        maintenanceCost: null,
         repairs,
         equipments: equipments.map(e => e.EquipmentName),
         symptomMap
@@ -131,7 +143,8 @@ module.exports = (db) => {
     }
   });
 
-  // GET /api/contact-owner/:tenantId
+
+  // GET /contact-owner/:tenantId
   router.get('/contact-owner/:tenantId', async (req, res) => {
     const tenantId = Number(req.params.tenantId);
     if (!Number.isInteger(tenantId)) return res.status(400).json({ error: 'tenantId ต้องเป็นตัวเลข' });
@@ -153,13 +166,13 @@ module.exports = (db) => {
       owner.OwnerName = `${owner.FirstName} ${owner.LastName}`;
       res.json(owner);
     } catch (e) {
-      console.error('❌ /api/contact-owner:', e);
+      console.error('❌ /contact-owner:', e);
       res.status(500).json({ error: 'เกิดข้อผิดพลาดในการดึงข้อมูลเจ้าของหอพัก' });
     }
   });
 
-  // GET /api/tenant-room-price/:tenantId
-  router.get('/api/tenant-room-price/:tenantId', async (req, res) => {
+  // GET /tenant-room-price/:tenantId
+  router.get('/tenant-room-price/:tenantId', async (req, res) => {
     const tenantId = Number(req.params.tenantId);
     if (!Number.isInteger(tenantId)) return res.status(400).json({ error: 'tenantId ต้องเป็นตัวเลข' });
 
@@ -177,7 +190,7 @@ module.exports = (db) => {
       if (!roomPrice) return res.status(404).json({ error: 'ไม่พบข้อมูลราคาห้อง' });
       res.json({ roomNumber: roomPrice.RoomNumber, price: roomPrice.price });
     } catch (e) {
-      console.error('❌ /api/tenant-room-price:', e);
+      console.error('❌ /tenant-room-price:', e);
       res.status(500).json({ error: 'เกิดข้อผิดพลาดในการดึงราคาค่าห้อง' });
     }
   });

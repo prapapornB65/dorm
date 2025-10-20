@@ -4,10 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_application_1/theme/app_theme.dart';
 import 'package:flutter_application_1/widgets/neumorphic_card.dart';
 import 'package:flutter_application_1/color_app.dart';
+import 'package:flutter_application_1/widgets/gradient_app_bar.dart';
 
 // ปลายทาง
 import 'package:flutter_application_1/tenantt/service/ContactOwnerPage.dart';
 import 'package:flutter_application_1/tenantt/service/UsageHistoryPage.dart';
+import 'package:flutter_application_1/tenantt/Usage/Usage Overview Page.dart';
+
 // ถ้ามีหน้าฟอร์มแจ้งซ่อมเฉพาะ ให้ import หน้านั้นแทน service_page.dart
 import 'package:flutter_application_1/tenantt/service/service_page.dart';
 
@@ -18,7 +21,8 @@ class ServiceQuickPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GradientScaffold(
-      appBar: AppBar(title: const Text('บริการทั้งหมด')),
+      appBar: const GradientAppBar(title: 'บริการทั้งหมด'),
+      topRadius: 0, // ชนขอบบน ไม่โค้ง
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
         children: [
@@ -67,6 +71,23 @@ class ServiceQuickPage extends StatelessWidget {
               );
             },
           ),
+          const SizedBox(height: 12),
+          _serviceTile(
+            context,
+            icon: Icons.bolt, // ไอคอนสื่อถึงไฟฟ้า
+            title: 'ค่าน้ำ-ค่าไฟ',
+            subtitle: 'ดูหน่วยและค่าใช้จ่ายรายเดือน',
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => UsageOverviewSplitPage(
+                      tenantId: tenantId), // หน้ากราฟและรายการรายเดือน
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 12),
         ],
       ),
     );

@@ -1,32 +1,39 @@
-// lib/tenantt/config/api_config.dart
 import 'package:flutter/foundation.dart'
     show kIsWeb, defaultTargetPlatform, TargetPlatform;
 
-// อ่านจาก --dart-define (ถ้ามี)
-const String _envBase =
-    String.fromEnvironment('TENANT_API_BASE_URL');
+// ✅ override ได้จาก --dart-define ถ้าต้องการ
+const String _envBase = String.fromEnvironment('TENANT_API_BASE_URL');
 
-// ← ใส่ IP ของเซิร์ฟเวอร์ใน LAN ของคุณตรงนี้
-// เช่น http://192.168.1.69:3000
+// ✅ เซ็ต true ตอนรันบน emulator: --dart-define=EMULATOR=true
+const bool _isEmulator = bool.fromEnvironment('EMULATOR', defaultValue: false);
+
+// ✅ IP ของ server ใน LAN (ใช้กับมือถือจริง)
 const String _fixedBase = 'http://192.168.1.100:3000';
 
 String _detectHostBase() {
-  // 1) ใช้ค่าจาก --dart-define ถ้ามี
+  // 0) ถ้าระบุผ่าน --dart-define มาก็ใช้เลย
   if (_envBase.isNotEmpty) return _envBase;
 
-  // 2) ใช้ค่า IP ตายตัวที่กำหนดไว้
-  if (_fixedBase.isNotEmpty) return _fixedBase;
-
-  // 3) ไม่มีก็ fallback ตามแพลตฟอร์ม
+  // 1) Web → localhost:3000
   if (kIsWeb) {
-    final origin = Uri.base.origin;
-    return origin.contains('localhost') ? 'http://localhost:3000' : origin;
+    return 'http://127.0.0.1:3000';
   }
+
+  // 2) Mobile/Desktop
   switch (defaultTargetPlatform) {
     case TargetPlatform.android:
-      return 'http://10.0.2.2:3000'; // สำหรับ Android emulator
+      // Android Emulator → 10.0.2.2, มือถือจริง → _fixedBase
+      return _isEmulator ? 'http://10.0.2.2:3000' : _fixedBase;
+
+    case TargetPlatform.iOS:
+      // iOS Simulator ใช้ localhost ได้ แต่เครื่องจริงต้องใช้ IP LAN
+      // ถ้าจะบังคับ simulator ให้ใช้ localhost:3000 ให้ปลดคอมเมนต์บรรทัดล่าง
+      // return 'http://localhost:3000';
+      return _fixedBase;
+
     default:
-      return 'http://localhost:3000';
+      // Desktop dev
+      return 'http://127.0.0.1:3000';
   }
 }
 

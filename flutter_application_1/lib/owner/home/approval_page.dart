@@ -52,6 +52,16 @@ class _OwnerApprovalsPageState extends State<OwnerApprovalsPage> {
     setState(fn);
   }
 
+  String? _tryExtractMsg(String body) {
+    try {
+      final d = jsonDecode(body);
+      if (d is Map) {
+        return (d['error'] ?? d['message'] ?? d['msg'])?.toString();
+      }
+    } catch (_) {}
+    return null;
+  }
+
   String _fmtDT(String? iso) {
     if (iso == null || iso.isEmpty) return '-';
     try {
@@ -122,6 +132,7 @@ class _OwnerApprovalsPageState extends State<OwnerApprovalsPage> {
 
       items = list.map<Map<String, dynamic>>((raw) {
         final m = Map<String, dynamic>.from(raw as Map);
+        
 
         // ✅ เผื่อ Payload เป็น String JSON หรือเป็น Map อยู่แล้ว
         Map<String, dynamic> payload = {};
@@ -170,6 +181,7 @@ class _OwnerApprovalsPageState extends State<OwnerApprovalsPage> {
               '${m['firstName'] ?? ''} ${m['lastName'] ?? ''}'.trim(),
           'room': roomVal,
           'building': m['buildingName'] ?? m['building'] ?? '-',
+          'buildingId': m['BuildingID'] ?? m['buildingId'] ?? m['building_id'],
           'requestedAt': requestedAtVal,
           'moveInDate': moveInVal, // ✅ เก็บเพิ่ม
           'status': (m['status'] ?? status).toString().toLowerCase(),
@@ -204,58 +216,147 @@ class _OwnerApprovalsPageState extends State<OwnerApprovalsPage> {
     }
   }
 
-  Future<void> _approve(Map<String, dynamic> item) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('ยืนยันอนุมัติ'),
-        content:
-            Text('อนุมัติคำขอของ ${item['tenantName']} ห้อง ${item['room']} ?'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('ยกเลิก')),
-          ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('อนุมัติ')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    try {
-      final token = await FirebaseAuth.instance.currentUser!.getIdToken(true);
-      final resp = await http.post(
-        _approveUrl(item['id']),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(const Duration(seconds: 12));
-
-      if (!mounted) return;
-      if (resp.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('อนุมัติสำเร็จ')),
-        );
-        _fetch();
-      } else if (resp.statusCode == 401) {
-        _logout();
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content:
-                  Text('อนุมัติไม่สำเร็จ: ${resp.statusCode} ${resp.body}')),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('ผิดพลาด: $e')),
+  Future<Map<String, dynamic>?> _findActiveTenant(int buildingId, String room) async {
+  try {
+    final uri = Uri.parse('$apiBaseUrl/api/building/$buildingId/tenants'
+        '?status=active&q=${Uri.encodeComponent(room)}');
+    final resp = await http.get(uri).timeout(const Duration(seconds: 10));
+    if (resp.statusCode != 200) return null;
+    final data = jsonDecode(resp.body);
+    if (data is List && data.isNotEmpty) {
+      // คัดเฉพาะห้องตรงกัน
+      final match = data.firstWhere(
+        (e) => (e['RoomNumber'] ?? '').toString().toUpperCase() == room.toUpperCase(),
+        orElse: () => null,
       );
+      return match == null ? null : Map<String, dynamic>.from(match);
+    }
+  } catch (_) {}
+  return null;
+}
+
+
+  Future<void> _approve(Map<String, dynamic> item) async {
+  final room = (item['room'] ?? '').toString();
+  final bId = (widget.buildingId ?? item['buildingId']) as int?;
+
+  // 1) ยืนยันครั้งแรกตามเดิม
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Text('ยืนยันอนุมัติ'),
+      content: Text('อนุมัติคำขอของ ${item['tenantName']} ห้อง $room ?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ยกเลิก')),
+        ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('อนุมัติ')),
+      ],
+    ),
+  );
+  if (ok != true) return;
+
+  // 2) UX: ถ้ารู้ buildingId ให้ pre-check มีผู้เช่าอยู่แล้วไหม
+  if (bId != null) {
+    final active = await _findActiveTenant(bId, room);
+    if (active != null) {
+      final cont = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('พบผู้เช่าปัจจุบันในห้องนี้'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('ห้อง $room มีผู้เช่าอยู่แล้ว:'),
+              const SizedBox(height: 6),
+              Text('- ชื่อ: ${active['FullName'] ?? '-'}'),
+              Text('- เริ่มเช่า: ${active['Start'] ?? '-'}'),
+              Text('- สิ้นสุด: ${active['End'] ?? 'ไม่มีกำหนด'}'),
+              const SizedBox(height: 10),
+              const Text('ยังต้องการอนุมัติต่อหรือไม่?'),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ยกเลิก')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('อนุมัติต่อ')),
+          ],
+        ),
+      );
+      if (cont != true) return;
     }
   }
+
+  // 3) ยิงอนุมัติไปที่ backend (ใช้ endpoint เดิมของคุณ)
+  try {
+    final token = await FirebaseAuth.instance.currentUser!.getIdToken(true);
+    final resp = await http.post(
+      _approveUrl(item['id']),
+      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
+    ).timeout(const Duration(seconds: 12));
+
+    if (!mounted) return;
+
+    if (resp.statusCode == 200) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('อนุมัติสำเร็จ')));
+      _fetch();
+      return;
+    }
+
+    if (resp.statusCode == 409) {
+      // แปล error ชัด ๆ
+      try {
+        final j = jsonDecode(resp.body) as Map;
+        final code = (j['error'] ?? '').toString();
+        if (code == 'TENANT_ACTIVE') {
+          final t = j['tenant'] ?? {};
+          showDialog(
+            context: context,
+            builder: (_) => AlertDialog(
+              title: const Text('ไม่สามารถอนุมัติได้'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('ห้อง $room มีผู้เช่าอยู่แล้ว'),
+                  const SizedBox(height: 6),
+                  Text('- ชื่อ: ${t['FullName'] ?? '-'}'),
+                  Text('- เริ่มเช่า: ${t['Start'] ?? '-'}'),
+                  Text('- สิ้นสุด: ${t['End'] ?? 'ไม่มีกำหนด'}'),
+                ],
+              ),
+              actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('ปิด'))],
+            ),
+          );
+          return;
+        }
+        if (code.startsWith('ROOM_')) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('ห้องไม่ว่าง (${code.replaceFirst('ROOM_', '')})')),
+          );
+          return;
+        }
+      } catch (_) {}
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('อนุมัติไม่สำเร็จ: ${resp.body}')),
+      );
+      return;
+    }
+
+    if (resp.statusCode == 401) {
+      _logout();
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('อนุมัติไม่สำเร็จ: ${resp.statusCode} ${resp.body}')),
+    );
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('ผิดพลาด: $e')));
+  }
+}
+
 
   Future<void> _reject(Map<String, dynamic> item) async {
     final reasonController = TextEditingController();
@@ -363,7 +464,7 @@ class _OwnerApprovalsPageState extends State<OwnerApprovalsPage> {
                           color: AppColors.primaryDark),
                       const SizedBox(width: 10),
                       Text(
-                        'คำขอเข้าพัก • ${widget.buildingName ?? '—'}',
+                        'คำขอเข้าพัก',
                         style: const TextStyle(
                           fontWeight: FontWeight.w800,
                           color: AppColors.textPrimary,

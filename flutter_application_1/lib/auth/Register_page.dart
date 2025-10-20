@@ -4,9 +4,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-// ✅ เพิ่ม import Firebase Auth
-import 'package:firebase_auth/firebase_auth.dart';
-
 import 'package:flutter_application_1/auth/login_page.dart';
 import 'package:flutter_application_1/config/api_config.dart' show apiBaseUrl;
 
@@ -66,6 +63,12 @@ class _RegisterPageState extends State<RegisterPage> {
     return null;
   }
 
+  String? _validateConfirmPassword(String? value) {
+    if (value == null || value.isEmpty) return 'กรุณายืนยันรหัสผ่าน';
+    if (value != _passwordController.text) return 'รหัสผ่านไม่ตรงกัน';
+    return null;
+  }
+
   (String first, String last) _splitFullName(String full) {
     final parts = full.trim().split(RegExp(r'\s+'));
     if (parts.isEmpty) return ('', '');
@@ -83,14 +86,9 @@ class _RegisterPageState extends State<RegisterPage> {
     }
   }
 
-  // --------- SUBMIT (แก้หลักอยู่ตรงนี้) ---------
   Future<void> _register() async {
     if (_isLoading) return;
     if (!_formKey.currentState!.validate()) return;
-    if (_passwordController.text != _confirmPasswordController.text) {
-      setState(() => _errorMessage = 'รหัสผ่านไม่ตรงกัน');
-      return;
-    }
 
     setState(() {
       _isLoading = true;
@@ -98,132 +96,99 @@ class _RegisterPageState extends State<RegisterPage> {
     });
 
     final email = _emailController.text.trim();
-    final password = _passwordController.text.trim();
     final fullName = _nameController.text.trim();
     final parts = fullName.split(RegExp(r'\s+'));
     final firstName = parts.isNotEmpty ? parts.first : '';
     final lastName = parts.length > 1 ? parts.sublist(1).join(' ') : '';
 
-    UserCredential? cred;
-
     try {
-      // 1) สมัคร Firebase
-      cred = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(email: email, password: password);
-      await cred.user?.updateDisplayName(fullName);
-
-      // 2) เลือก endpoint ตาม role
-      late Uri url;
-      late Map<String, dynamic> payload;
+      http.Response resp;
 
       if (_selectedRole == 'tenant') {
-        url = Uri.parse('$apiBaseUrl/api/tenant/register');
-        payload = {
+        // 🎯 ผู้เช่า: ส่งไปตารางรออนุมัติ (ไม่สร้าง Firebase, ไม่ส่ง password)
+        final body = {
           'firstName': firstName,
           'lastName': lastName,
-          'citizenID': _citizenIdController.text.trim(),
-          'email': email,
-          'phone': _phoneController.text.trim(),
-          'username': _usernameController.text.trim(),
-          'password': password,
-          'roomNumber': _roomNumberController.text.trim(),
+          'citizenID': _citizenIdController.text.trim(), // ออปชัน
+          'email': email.toLowerCase(),
+          'phone': _phoneController.text.trim(), // ออปชัน
+          'username': _usernameController.text.trim().isEmpty
+              ? null
+              : _usernameController.text.trim(),
+          'roomNumber': _roomNumberController.text
+              .trim()
+              .toUpperCase(), // บังคับ (เฉพาะผู้เช่า)
+          'password': _passwordController.text.trim(), // ✅ เพิ่มบังคับ
         };
-      } else if (_selectedRole == 'owner') {
-        url = Uri.parse('$apiBaseUrl/api/owner/register');
-        payload = {
+
+        resp = await http
+            .post(
+              Uri.parse('$apiBaseUrl/api/tenant/register'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode(body),
+            )
+            .timeout(const Duration(seconds: 20));
+
+        if (resp.statusCode != 200 && resp.statusCode != 201) {
+          setState(() => _errorMessage =
+              'สมัครผู้เช่าไม่สำเร็จ (${resp.statusCode}) ${resp.body}');
+          return;
+        }
+
+        // สำเร็จ
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('ส่งคำขอสมัครแล้ว กรุณารอเจ้าของอนุมัติ')),
+        );
+        Navigator.pushReplacement(
+            context, MaterialPageRoute(builder: (_) => LoginPage()));
+        return;
+      }
+
+      if (_selectedRole == 'owner') {
+        // 👑 เจ้าของหอ: สมัครที่ /api/owner/register (backend จะสร้าง Firebase ให้)
+        final body = {
           'firstName': firstName,
           'lastName': lastName,
-          'email': email,
+          'email': email.toLowerCase(),
           'phone': _phoneController.text.trim(),
           'citizenId': _citizenIdController.text.trim(),
-          'username': _usernameController.text.trim(),
-          'password': password,
+          'username': _usernameController.text.trim().isEmpty
+              ? null
+              : _usernameController.text.trim(),
+          'password': _passwordController.text.trim(), // owner ต้องมี
           'apiKey': _apiKeyController.text.trim(),
           'projectId': _projectIdController.text.trim(),
         };
-      } else {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = 'สมัครผู้ดูแลระบบทำในระบบหลังบ้าน';
-        });
+
+        resp = await http
+            .post(
+              Uri.parse('$apiBaseUrl/api/owner/register'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode(body),
+            )
+            .timeout(const Duration(seconds: 20));
+
+        if (resp.statusCode != 200 && resp.statusCode != 201) {
+          setState(() => _errorMessage =
+              'สมัครเจ้าของหอไม่สำเร็จ (${resp.statusCode}) ${resp.body}');
+          return;
+        }
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('สมัครเจ้าของหอสําเร็จ')),
+        );
+        Navigator.pushReplacement(
+            context, MaterialPageRoute(builder: (_) => LoginPage()));
         return;
       }
 
-      // 3) ยิง backend “ครั้งเดียว”
-      final resp = await http
-          .post(
-            url,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(payload),
-          )
-          .timeout(const Duration(seconds: 20));
-      debugPrint('[REGISTER] ${url.path} -> ${resp.statusCode} ${resp.body}');
-
-      if (resp.statusCode != 200 && resp.statusCode != 201) {
-        // rollback firebase ถ้าหลังบ้านไม่ผ่าน
-        try {
-          await cred.user?.delete();
-        } catch (_) {}
-        final msg = resp.body.isNotEmpty
-            ? (jsonDecode(resp.body)['error'] ?? resp.body)
-            : '';
-        setState(
-            () => _errorMessage = 'สมัครไม่สำเร็จ (${resp.statusCode}) ${msg}');
-        return;
-      }
-
-      // 4) นำทางกลับหน้า Login (ยังคง session ไว้ เพื่อให้ LoginPage โชว์การ์ด "รออนุมัติ")
-      if (!mounted) return;
-      if (_selectedRole == 'tenant') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('ส่งคำขอสมัครแล้ว กำลังรออนุมัติ')),
-        );
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => LoginPage()),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('ส่งคำขอสมัครเจ้าของหอแล้ว รอผู้ดูแลอนุมัติ')),
-        );
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => LoginPage()),
-        );
-      }
-    } on FirebaseAuthException catch (e) {
-      // แสดง error ที่เข้าใจง่าย + rollback ถ้าจำเป็น
-      String msg = 'สมัครไม่สำเร็จ';
-      switch (e.code) {
-        case 'email-already-in-use':
-          msg = 'อีเมลนี้ถูกใช้ไปแล้ว';
-          break;
-        case 'invalid-email':
-          msg = 'อีเมลไม่ถูกต้อง';
-          break;
-        case 'weak-password':
-          msg = 'รหัสผ่านอ่อนเกินไป (อย่างน้อย 8 ตัวอักษร)';
-          break;
-        case 'operation-not-allowed':
-          msg = 'โปรดเปิด Email/Password ใน Firebase Console';
-          break;
-        default:
-          msg = e.message ?? msg;
-      }
-      try {
-        await cred?.user?.delete();
-      } catch (_) {}
-      if (mounted) setState(() => _errorMessage = msg);
-    } on TimeoutException {
-      try {
-        await cred?.user?.delete();
-      } catch (_) {}
-      if (mounted) setState(() => _errorMessage = 'เชื่อมต่อช้า โปรดลองใหม่');
+      // 🔒 admin: ยังไม่รองรับสมัครผ่านหน้า UI นี้
+      setState(
+          () => _errorMessage = 'ยังไม่รองรับการสมัครผู้ดูแลระบบผ่านหน้านี้');
     } catch (e) {
-      try {
-        await cred?.user?.delete();
-      } catch (_) {}
       if (mounted) setState(() => _errorMessage = 'เกิดข้อผิดพลาด: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -300,15 +265,19 @@ class _RegisterPageState extends State<RegisterPage> {
                       const SizedBox(height: 6),
                       Text(
                         _selectedRole == 'tenant'
-                            ? 'กรอกข้อมูลเพื่อสมัครผู้เช่า (รอเจ้าของหออนุมัติ)'
+                            ? 'กรอกข้อมูลเพื่อสมัครผู้เช่า (รอแอดมินอนุมัติ)'
                             : _selectedRole == 'owner'
-                                ? 'กรอกข้อมูลเพื่อสมัครเจ้าของหอพัก (รอผู้ดูแลระบบอนุมัติ)'
+                                ? 'กรอกข้อมูลเพื่อสมัครเจ้าของหอพัก (รอแอดมินอนุมัติ)'
                                 : 'สมัครผู้ดูแลระบบทำในระบบหลังบ้าน',
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                            color: Colors.white.withOpacity(0.9), height: 1.25),
+                          color: Colors.white.withOpacity(0.9),
+                          height: 1.25,
+                        ),
                       ),
                       const SizedBox(height: 22),
+
+                      // เลือกบทบาท
                       _pillField(
                         child: DropdownButtonHideUnderline(
                           child: DropdownButtonFormField<String>(
@@ -332,72 +301,90 @@ class _RegisterPageState extends State<RegisterPage> {
                         ),
                       ),
                       const SizedBox(height: 12),
+
+                      // ชื่อ-นามสกุล (บังคับ)
                       _pillField(
                         child: TextFormField(
                           controller: _nameController,
                           decoration: _pillDecoration(
-                              hint: 'ชื่อ - นามสกุล', icon: Icons.person),
+                            hint: 'ชื่อ - นามสกุล',
+                            icon: Icons.person,
+                          ),
                           validator: (v) {
-                            if (v == null || v.trim().isEmpty)
+                            if (v == null || v.trim().isEmpty) {
                               return 'กรุณากรอกชื่อ - นามสกุล';
+                            }
                             final parts = v.trim().split(RegExp(r'\s+'));
-                            if (parts.length < 2)
+                            if (parts.length < 2) {
                               return 'กรุณากรอกทั้งชื่อและนามสกุล';
+                            }
                             return null;
                           },
                         ),
                       ),
                       const SizedBox(height: 12),
+
+                      // ชื่อผู้ใช้ (ออปชัน)
                       _pillField(
                         child: TextFormField(
                           controller: _usernameController,
                           decoration: _pillDecoration(
-                              hint: 'ชื่อผู้ใช้ (ถ้ามี)',
-                              icon: Icons.person_outline),
+                            hint: 'ชื่อผู้ใช้ (ถ้ามี)',
+                            icon: Icons.person_outline,
+                          ),
                         ),
                       ),
                       const SizedBox(height: 12),
+
+                      // อีเมล (บังคับ)
                       _pillField(
                         child: TextFormField(
                           controller: _emailController,
                           keyboardType: TextInputType.emailAddress,
                           decoration: _pillDecoration(
-                              hint: 'อีเมล', icon: Icons.alternate_email),
+                            hint: 'อีเมล',
+                            icon: Icons.alternate_email,
+                          ),
                           validator: _validateEmail,
                         ),
                       ),
                       const SizedBox(height: 12),
+
+                      // เบอร์โทร (ออปชัน)
                       _pillField(
                         child: TextFormField(
                           controller: _phoneController,
                           keyboardType: TextInputType.phone,
                           decoration: _pillDecoration(
-                              hint: 'เบอร์โทรศัพท์', icon: Icons.phone),
-                          validator: (v) => (v == null || v.isEmpty)
-                              ? 'กรุณากรอกเบอร์โทรศัพท์'
-                              : null,
+                            hint: 'เบอร์โทรศัพท์',
+                            icon: Icons.phone,
+                          ),
                         ),
                       ),
                       const SizedBox(height: 12),
+
+                      // รหัสบัตรประชาชน (ออปชัน)
                       _pillField(
                         child: TextFormField(
                           controller: _citizenIdController,
                           keyboardType: TextInputType.number,
                           decoration: _pillDecoration(
-                              hint: 'รหัสบัตรประชาชน', icon: Icons.credit_card),
-                          validator: (v) => (v == null || v.isEmpty)
-                              ? 'กรุณากรอกรหัสบัตรประชาชน'
-                              : null,
+                            hint: 'รหัสบัตรประชาชน',
+                            icon: Icons.credit_card,
+                          ),
                         ),
                       ),
                       const SizedBox(height: 12),
+
+                      // หมายเลขห้องพัก (บังคับเฉพาะผู้เช่า)
                       if (_selectedRole == 'tenant') ...[
                         _pillField(
                           child: TextFormField(
                             controller: _roomNumberController,
                             decoration: _pillDecoration(
-                                hint: 'หมายเลขห้องพัก',
-                                icon: Icons.meeting_room_outlined),
+                              hint: 'หมายเลขห้องพัก',
+                              icon: Icons.meeting_room_outlined,
+                            ),
                             validator: (v) => (v == null || v.isEmpty)
                                 ? 'กรุณากรอกหมายเลขห้องพัก'
                                 : null,
@@ -405,15 +392,16 @@ class _RegisterPageState extends State<RegisterPage> {
                         ),
                         const SizedBox(height: 12),
                       ],
+
+                      // ข้อมูลเจ้าของ: ApiKey/ProjectID (ออปชัน)
                       if (_selectedRole == 'owner') ...[
                         _pillField(
                           child: TextFormField(
                             controller: _apiKeyController,
                             decoration: _pillDecoration(
-                                hint: 'Tuya Api Key', icon: Icons.vpn_key),
-                            validator: (v) => (v == null || v.isEmpty)
-                                ? 'กรุณากรอก Api Key'
-                                : null,
+                              hint: 'Tuya Api Key',
+                              icon: Icons.vpn_key,
+                            ),
                           ),
                         ),
                         const SizedBox(height: 12),
@@ -421,35 +409,41 @@ class _RegisterPageState extends State<RegisterPage> {
                           child: TextFormField(
                             controller: _projectIdController,
                             decoration: _pillDecoration(
-                                hint: 'Tuya Project ID',
-                                icon: Icons.settings_applications),
-                            validator: (v) => (v == null || v.isEmpty)
-                                ? 'กรุณากรอก Project ID'
-                                : null,
+                              hint: 'Tuya Project ID',
+                              icon: Icons.settings_applications,
+                            ),
                           ),
                         ),
                         const SizedBox(height: 12),
                       ],
+
+                      // รหัสผ่าน (บังคับ)
                       _pillField(
                         child: TextFormField(
                           controller: _passwordController,
                           obscureText: true,
                           decoration: _pillDecoration(
-                              hint: 'รหัสผ่าน (อย่างน้อย 8 ตัวอักษร)',
-                              icon: Icons.lock_outline),
+                            hint: 'รหัสผ่าน (อย่างน้อย 8 ตัวอักษร)',
+                            icon: Icons.lock_outline,
+                          ),
                           validator: _validatePassword,
                         ),
                       ),
                       const SizedBox(height: 12),
+
+                      // ยืนยันรหัสผ่าน (บังคับ)
                       _pillField(
                         child: TextFormField(
                           controller: _confirmPasswordController,
                           obscureText: true,
                           decoration: _pillDecoration(
-                              hint: 'ยืนยันรหัสผ่าน', icon: Icons.lock_reset),
-                          validator: _validatePassword,
+                            hint: 'ยืนยันรหัสผ่าน',
+                            icon: Icons.lock_reset,
+                          ),
+                          validator: _validateConfirmPassword,
                         ),
                       ),
+
                       const SizedBox(height: 8),
                       if (_errorMessage != null) ...[
                         Text(
@@ -460,6 +454,8 @@ class _RegisterPageState extends State<RegisterPage> {
                         const SizedBox(height: 8),
                       ],
                       const SizedBox(height: 12),
+
+                      // ปุ่มลงทะเบียน
                       SizedBox(
                         width: double.infinity,
                         height: 48,
@@ -501,6 +497,8 @@ class _RegisterPageState extends State<RegisterPage> {
                         ),
                       ),
                       const SizedBox(height: 10),
+
+                      // ลิงก์ไปหน้า Login
                       TextButton(
                         onPressed: () {
                           Navigator.pushReplacement(

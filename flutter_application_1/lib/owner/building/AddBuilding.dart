@@ -5,12 +5,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter_application_1/config/api_config.dart';
 import 'package:flutter_application_1/color_app.dart';
-
-final String apiBaseUrl = kIsWeb
-    ? 'http://localhost:3000' // ถ้าเว็บ ใช้ localhost
-    : 'http://10.0.2.2:3000'; // ถ้า emulator android ใช้ 10.0.2.2
 
 class AddBuildingScreen extends StatefulWidget {
   final int ownerId;
@@ -131,8 +127,6 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
       selectedAmphureName = match.group(4)?.trim();
       selectedProvinceName = match.group(5)?.trim();
 
-      selectedProvinceName = match.group(5)?.trim();
-
       if (selectedProvinceName != null && selectedAmphureName == "เมือง") {
         selectedAmphureName = "เมือง$selectedProvinceName";
       }
@@ -168,6 +162,7 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
       }
     }
 
+    // ฟิลด์ตัวเลข/สิ่งอำนวยความสะดวก
     floorsController.text = (b['floors'] ?? '').toString();
     roomsController.text = (b['rooms'] ?? '').toString();
 
@@ -176,6 +171,13 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
     hasParking = facilityList.contains("Parking");
     hasWifi = facilityList.contains("Wifi");
     hasAir = facilityList.contains("Air");
+
+    // ตั้งค่า _qrUrl "นอก if" + ใส่ cache-busting เสมอ
+    final rawQr = (b['qrCodeUrl'] ?? b['QrCodeUrl'] ?? '').toString().trim();
+    if (rawQr.isNotEmpty) {
+      final abs = rawQr.startsWith('http') ? rawQr : '$apiBaseUrl/$rawQr';
+      _qrUrl = _withBust(abs);
+    }
 
     setState(() {});
   }
@@ -208,7 +210,7 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
         if (widget.buildingToEdit != null) {
           final buildingId = widget.buildingToEdit!['buildingId'];
           response = await http.put(
-            Uri.parse('http://localhost:3000/api/building/$buildingId'),
+            Uri.parse('$apiBaseUrl/api/building/$buildingId'),
             headers: {'Content-Type': 'application/json'},
             body: json.encode(buildingData),
           );
@@ -227,7 +229,7 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
         } else {
           // เพิ่มตึกใหม่
           response = await http.post(
-            Uri.parse('http://localhost:3000/api/building'),
+            Uri.parse('$apiBaseUrl/api/building'),
             headers: {'Content-Type': 'application/json'},
             body: json.encode(buildingData),
           );
@@ -261,14 +263,14 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
         title: const Text("ผิดพลาด",
             style: TextStyle(
                 color: AppColors.textPrimary, fontWeight: FontWeight.w800)),
-        content: Text(message,
-            style: const TextStyle(color: AppColors.textPrimary)),
+        content:
+            Text(message, style: const TextStyle(color: AppColors.textPrimary)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text("ตกลง",
-                style:
-                    TextStyle(color: AppColors.primaryDark, fontWeight: FontWeight.w700)),
+                style: TextStyle(
+                    color: AppColors.primaryDark, fontWeight: FontWeight.w700)),
           )
         ],
       ),
@@ -322,7 +324,7 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
 
     try {
       final response = await http.delete(
-        Uri.parse('http://localhost:3000/api/building/$buildingId'),
+        Uri.parse('$apiBaseUrl/api/building/$buildingId'),
       );
 
       if (response.statusCode == 200) {
@@ -343,57 +345,86 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
     }
   }
 
-  Future<void> pickQrImage() async {
-    final picker = ImagePicker();
-    final pickedFile = await picker.pickImage(source: ImageSource.gallery);
-    if (pickedFile != null) {
-      final bytes = await pickedFile.readAsBytes();
-      setState(() {
-        _qrImage = bytes;
-      });
+  String _withBust(String url) {
+    final sep = url.contains('?') ? '&' : '?';
+    return '$url${sep}t=${DateTime.now().millisecondsSinceEpoch}';
+  }
 
-      // ถ้ามี buildingId (โหมดแก้ไข) ให้อัปโหลดทันที
-      final buildingId = widget.buildingToEdit?['buildingId'] ?? 0;
-      if (buildingId != 0) {
-        try {
-          await uploadQrToServer(bytes, widget.ownerId, buildingId);
-        } catch (e) {
-          _showErrorDialog('อัปโหลด QR Code ล้มเหลว: $e');
-        }
-      } else {
-        _qrUrl = null;
-      }
+  Future<void> pickQrImage() async {
+  final picker = ImagePicker();
+  final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+
+  if (pickedFile == null) {
+    debugPrint('[AddBuilding] no file picked');
+    return;
+  }
+
+  final bytes = await pickedFile.readAsBytes();
+  debugPrint('[AddBuilding] picked: ${pickedFile.name} bytes=${bytes.length} at ${DateTime.now()}');
+
+  // แสดง “รูปใหม่จากหน่วยความจำ” ทันที และตัด URL เก่าออก
+  setState(() {
+    _qrImage = bytes;
+    _qrUrl = null;
+  });
+  debugPrint('[AddBuilding] preview = MEMORY');
+
+  // ถ้าเป็นโหมดแก้ไข → อัปโหลด แล้วสลับกลับเป็น URL ใหม่
+  final buildingId = widget.buildingToEdit?['buildingId'] ?? 0;
+  if (buildingId != 0) {
+    try {
+      await uploadQrToServer(bytes, widget.ownerId, buildingId);
+      setState(() {
+        _qrImage = null; // ใช้ URL ใหม่แทน
+      });
+      debugPrint('[AddBuilding] preview = NETWORK (after upload)');
+    } catch (e) {
+      _showErrorDialog('อัปโหลด QR Code ล้มเหลว: $e');
+      debugPrint('[AddBuilding] upload error: $e');
     }
   }
+}
+
 
   Future<void> uploadQrToServer(
-      Uint8List imageBytes, int ownerId, int buildingId) async {
-    final uri = Uri.parse('http://localhost:3000/api/upload-qr');
-    final request = http.MultipartRequest('POST', uri)
-      ..fields['ownerId'] = ownerId.toString()
-      ..fields['buildingId'] = buildingId.toString()
-      ..files.add(
-        http.MultipartFile.fromBytes(
-          'qrImage',
-          imageBytes,
-          filename: 'qr_code.png',
-          contentType: MediaType('image', 'png'),
-        ),
-      );
+  Uint8List imageBytes, int ownerId, int buildingId) async {
 
-    final response = await request.send();
-    if (response.statusCode == 200) {
-      final responseData = await response.stream.bytesToString();
-      final data = json.decode(responseData);
-      final qrUrl = data['qrUrl'];
+  debugPrint('[AddBuilding] upload start size=${imageBytes.length} at ${DateTime.now()}');
 
-      setState(() {
-        _qrUrl = qrUrl;
-      });
-    } else {
-      throw Exception('Failed to upload QR Code');
-    }
+  final uri = Uri.parse('$apiBaseUrl/api/upload-qr');
+  final request = http.MultipartRequest('POST', uri)
+    ..fields['ownerId'] = ownerId.toString()
+    ..fields['buildingId'] = buildingId.toString()
+    ..files.add(
+      http.MultipartFile.fromBytes(
+        'qrImage',
+        imageBytes,
+        filename: 'qr_${DateTime.now().millisecondsSinceEpoch}.png',
+        contentType: MediaType('image', 'png'),
+      ),
+    );
+
+  final response = await request.send();
+  debugPrint('[AddBuilding] upload responseStatus=${response.statusCode}');
+
+  if (response.statusCode != 200) {
+    throw Exception('Failed to upload QR Code');
   }
+
+  final bodyStr = await response.stream.bytesToString();
+  debugPrint('[AddBuilding] upload body=$bodyStr');
+
+  final data = json.decode(bodyStr);
+  final raw = (data['qrUrl'] ?? '').toString();
+  final abs = raw.startsWith('http') ? raw : '$apiBaseUrl/$raw';
+  final busted = _withBust(abs); // กันแคช
+
+  setState(() {
+    _qrUrl = busted;
+  });
+  debugPrint('[AddBuilding] new url=$_qrUrl');
+}
+
 
   @override
   Widget build(BuildContext context) {
@@ -408,7 +439,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
         backgroundColor: Colors.transparent,
         title: Text(
           isEditMode ? 'แก้ไขตึก' : 'เพิ่มตึก',
-          style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: .2),
+          style:
+              const TextStyle(fontWeight: FontWeight.w800, letterSpacing: .2),
         ),
         flexibleSpace: Container(
           decoration: const BoxDecoration(
@@ -444,7 +476,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                           ),
                           child: Row(
                             children: const [
-                              Icon(Icons.apartment, color: AppColors.primaryDark),
+                              Icon(Icons.apartment,
+                                  color: AppColors.primaryDark),
                               SizedBox(width: 6),
                               Text('ข้อมูลตึก',
                                   style: TextStyle(
@@ -478,7 +511,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                     Row(
                       children: [
                         Expanded(
-                          child: buildTextField("บ้านเลขที่", addressController),
+                          child:
+                              buildTextField("บ้านเลขที่", addressController),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
@@ -495,7 +529,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                           child: DropdownButtonFormField<String>(
                             value: selectedProvinceId,
                             decoration: _dropdownDecoration("จังหวัด"),
-                            items: provinces.map<DropdownMenuItem<String>>((prov) {
+                            items:
+                                provinces.map<DropdownMenuItem<String>>((prov) {
                               return DropdownMenuItem(
                                 value: prov['id'].toString(),
                                 child: Text(prov['name_th']),
@@ -507,8 +542,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                                 selectedAmphureId = null;
                                 selectedTambonId = null;
                                 zipCodeController.clear();
-                                amphures = provinces
-                                        .firstWhere((p) => p['id'].toString() == value)['amphure']
+                                amphures = provinces.firstWhere((p) =>
+                                        p['id'].toString() == value)['amphure']
                                     as List<dynamic>;
                                 tambons = [];
                               });
@@ -520,7 +555,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                           child: DropdownButtonFormField<String>(
                             value: selectedAmphureId,
                             decoration: _dropdownDecoration("อำเภอ"),
-                            items: amphures.map<DropdownMenuItem<String>>((amp) {
+                            items:
+                                amphures.map<DropdownMenuItem<String>>((amp) {
                               return DropdownMenuItem(
                                 value: amp['id'].toString(),
                                 child: Text(amp['name_th']),
@@ -531,8 +567,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                                 selectedAmphureId = value;
                                 selectedTambonId = null;
                                 zipCodeController.clear();
-                                tambons = amphures
-                                        .firstWhere((a) => a['id'].toString() == value)['tambon']
+                                tambons = amphures.firstWhere((a) =>
+                                        a['id'].toString() == value)['tambon']
                                     as List<dynamic>;
                               });
                             },
@@ -551,7 +587,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                             }).toList(),
                             onChanged: (value) {
                               final zip = tambons
-                                  .firstWhere((t) => t['id'].toString() == value)['zip_code']
+                                  .firstWhere((t) =>
+                                      t['id'].toString() == value)['zip_code']
                                   .toString();
                               setState(() {
                                 selectedTambonId = value;
@@ -574,11 +611,13 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                     Row(
                       children: [
                         Expanded(
-                          child: buildTextField("จำนวนชั้น", floorsController, isNumeric: true),
+                          child: buildTextField("จำนวนชั้น", floorsController,
+                              isNumeric: true),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
-                          child: buildTextField("จำนวนห้อง", roomsController, isNumeric: true),
+                          child: buildTextField("จำนวนห้อง", roomsController,
+                              isNumeric: true),
                         ),
                       ],
                     ),
@@ -592,23 +631,27 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                     ),
                     const SizedBox(height: 10),
                     _NeuCard(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 6),
                       child: Theme(
                         data: Theme.of(context).copyWith(
                           checkboxTheme: CheckboxThemeData(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                            fillColor:
-                                MaterialStateProperty.resolveWith((states) => AppColors.primary),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(6)),
+                            fillColor: MaterialStateProperty.resolveWith(
+                                (states) => AppColors.primary),
                           ),
                         ),
                         child: Column(
                           children: allFacilities.map((facility) {
                             return CheckboxListTile(
                               dense: true,
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                              contentPadding:
+                                  const EdgeInsets.symmetric(horizontal: 4),
                               title: Text(
                                 facility,
-                                style: const TextStyle(color: AppColors.textPrimary),
+                                style: const TextStyle(
+                                    color: AppColors.textPrimary),
                               ),
                               value: selectedFacilities.contains(facility),
                               onChanged: (val) {
@@ -648,15 +691,34 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                               borderRadius: BorderRadius.circular(16),
                               border: Border.all(color: AppColors.border),
                             ),
-                            child: _qrImage != null
-                                ? ClipRRect(
-                                    borderRadius: BorderRadius.circular(16),
-                                    child: Image.memory(_qrImage!, fit: BoxFit.cover),
-                                  )
-                                : const Center(
-                                    child: Icon(Icons.image_not_supported,
-                                        size: 40, color: AppColors.textSecondary),
+                            child: () {
+                              if (_qrImage != null) {
+                                return ClipRRect(
+                                  borderRadius: BorderRadius.circular(16),
+                                  child: Image.memory(_qrImage!,
+                                      fit: BoxFit.cover),
+                                );
+                              }
+                              if (_qrUrl != null && _qrUrl!.isNotEmpty) {
+                                return ClipRRect(
+                                  borderRadius: BorderRadius.circular(16),
+                                  child: Image.network(
+                                    _qrUrl!,
+                                    key: ValueKey(
+                                        _qrUrl), 
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => const Icon(
+                                        Icons.broken_image_outlined,
+                                        size: 40,
+                                        color: AppColors.textSecondary),
                                   ),
+                                );
+                              }
+                              return const Center(
+                                child: Icon(Icons.image_not_supported,
+                                    size: 40, color: AppColors.textSecondary),
+                              );
+                            }(),
                           ),
                           const SizedBox(width: 14),
                           Expanded(
@@ -672,8 +734,9 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                                 const SizedBox(height: 6),
                                 const Text(
                                   'รองรับ .png / .jpg',
-                                  style:
-                                      TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                                  style: TextStyle(
+                                      color: AppColors.textSecondary,
+                                      fontSize: 12),
                                 ),
                                 const SizedBox(height: 10),
                                 OutlinedButton.icon(
@@ -681,9 +744,11 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                                   icon: const Icon(Icons.upload_file_rounded,
                                       color: AppColors.primaryDark),
                                   label: const Text('เลือกรูป QR Code',
-                                      style: TextStyle(color: AppColors.primaryDark)),
+                                      style: TextStyle(
+                                          color: AppColors.primaryDark)),
                                   style: OutlinedButton.styleFrom(
-                                    side: const BorderSide(color: AppColors.primaryDark),
+                                    side: const BorderSide(
+                                        color: AppColors.primaryDark),
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(12),
                                     ),
@@ -699,35 +764,36 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
                     const SizedBox(height: 22),
 
                     // Action buttons
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        // Save
-                        _PrimaryGradientButton(
-                          text: isEditMode ? "บันทึกการแก้ไข" : "เพิ่มตึก",
-                          icon: Icons.save_rounded,
-                          onTap: submitForm,
-                        ),
-                        const SizedBox(width: 12),
-                        // Delete
-                        if (isEditMode)
-                          ElevatedButton.icon(
-                            onPressed: () {
-                              deleteBuilding(widget.buildingToEdit!['buildingId']);
-                            },
-                            icon: const Icon(Icons.delete_outline),
-                            label: const Text("ลบ"),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.red.shade600,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 24, vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
+                    Center(
+                      child: Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          _PrimaryGradientButton(
+                            text: isEditMode ? "บันทึกการแก้ไข" : "เพิ่มตึก",
+                            icon: Icons.save_rounded,
+                            onTap: submitForm,
+                          ),
+                          if (isEditMode)
+                            ElevatedButton.icon(
+                              onPressed: () => deleteBuilding(
+                                  widget.buildingToEdit!['buildingId']),
+                              icon: const Icon(Icons.delete_outline),
+                              label: const Text("ลบ"),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red.shade600,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 24, vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                elevation: 2,
                               ),
                             ),
-                          ),
-                      ],
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -745,7 +811,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
         labelStyle: const TextStyle(color: AppColors.textSecondary),
         filled: true,
         fillColor: AppColors.primaryLight,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: AppColors.border),
@@ -765,7 +832,8 @@ class _AddBuildingScreenState extends State<AddBuildingScreen> {
         labelStyle: const TextStyle(color: AppColors.textSecondary),
         filled: true,
         fillColor: AppColors.primaryLight,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: AppColors.border),
@@ -852,30 +920,38 @@ class _PrimaryGradientButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
+    return Material(
+      // << ต้องมี Material
+      color: Colors.transparent,
+      elevation: 2, // ดูเด่นขึ้น
       borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: Ink(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [AppColors.gradientStart, AppColors.gradientEnd],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Ink(
+          // Ink วาดบน Material ข้างบน
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [AppColors.gradientStart, AppColors.gradientEnd],
+            ),
+            borderRadius: BorderRadius.all(Radius.circular(12)),
           ),
-          borderRadius: BorderRadius.all(Radius.circular(12)),
-        ),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          child: Row(
-            children: [
-              Icon(icon, color: Colors.white),
-              const SizedBox(width: 8),
-              Text(
-                text,
-                style: const TextStyle(
-                    color: Colors.white, fontWeight: FontWeight.w800),
-              ),
-            ],
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min, // << ขนาดพอดีเนื้อหา
+              children: [
+                Icon(icon, color: Colors.white),
+                const SizedBox(width: 8),
+                Text(
+                  text,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

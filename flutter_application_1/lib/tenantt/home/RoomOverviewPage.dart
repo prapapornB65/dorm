@@ -8,6 +8,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_application_1/utils/shared_prefs_helper.dart';
 import 'package:flutter_application_1/config/api_config.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 /// ---------- Palette ----------
 class AppColors {
@@ -76,11 +77,19 @@ class TenantRoomOverview {
 
 /// ---------- Utils ----------
 String formatDateOnly(String? rawDate) {
-  if (rawDate == null) return '-';
+  if (rawDate == null || rawDate.trim().isEmpty) return '-';
   try {
-    final date = DateTime.parse(rawDate);
+    final date = DateTime.parse(rawDate).toLocal(); // ⬅️ แปลงเป็นเวลาเครื่อง
     return DateFormat('dd MMM yyyy', 'th_TH').format(date);
   } catch (_) {
+    // กันเคส non-ISO (เช่น 'YYYY-MM-DD')
+    final m = RegExp(r'^(\d{4}-\d{2}-\d{2})').firstMatch(rawDate);
+    if (m != null) {
+      try {
+        final date = DateTime.parse(m.group(1)!).toLocal();
+        return DateFormat('dd MMM yyyy', 'th_TH').format(date);
+      } catch (_) {}
+    }
     return '-';
   }
 }
@@ -179,95 +188,16 @@ class _RoomOverviewPageState extends State<RoomOverviewPage> {
   bool isLoading = true;
   bool isLoadingNotifications = true;
 
-  List<TenantMeter> meters = [];
-  bool isLoadingMeters = true;
-  String? metersError;
-
   @override
   void initState() {
     super.initState();
+    // ✅ โหลดข้อมูลภาษาไทยสำหรับ intl (ทำครั้งเดียวพอ)
+    initializeDateFormatting('th_TH').then((_) {
+      // จะโหลดเสร็จเร็วมาก ถ้าอยากชัวร์ค่อย setState ให้ rebuild
+      if (mounted) setState(() {});
+    });
+
     _loadTenantData();
-  }
-
-  // ===== Load tenant meters =====
-  Future<void> fetchTenantMeters() async {
-    setState(() {
-      isLoadingMeters = true;
-      metersError = null;
-    });
-
-    // เตรียม endpoint ที่จะลองเรียก
-    final List<Uri> candidates = [];
-    if (tenantId != null) {
-      candidates
-          .add(Uri.parse('$apiBaseUrl/tenant/meters')); // อ่านจาก JWT ก็ได้
-      candidates.add(
-          Uri.parse('$apiBaseUrl/tenant-meters/$tenantId')); // ระบุ tenantId
-    }
-    if (roomNumber != null && roomNumber!.isNotEmpty) {
-      candidates.add(Uri.parse('$apiBaseUrl/room-meters/$roomNumber'));
-      candidates.add(Uri.parse('$apiBaseUrl/meters?roomNumber=$roomNumber'));
-    }
-    if (candidates.isEmpty) {
-      setState(() {
-        isLoadingMeters = false;
-        meters = [];
-      });
-      return;
-    }
-
-    // ถ้าต้องส่ง JWT header
-    final idToken = await FirebaseAuth.instance.currentUser?.getIdToken();
-    final headers = idToken == null
-        ? <String, String>{}
-        : {'Authorization': 'Bearer $idToken'};
-
-    List<dynamic>? rawList;
-    for (final u in candidates) {
-      try {
-        final r = await http
-            .get(u, headers: headers)
-            .timeout(const Duration(seconds: 12));
-        if (r.statusCode == 200) {
-          final body = jsonDecode(r.body);
-          if (body is List) {
-            rawList = body;
-            break;
-          }
-          if (body is Map && body['items'] is List) {
-            rawList = body['items'];
-            break;
-          }
-          if (body is Map && body['data'] is List) {
-            rawList = body['data'];
-            break;
-          }
-        }
-      } catch (_) {/* ลอง endpoint ถัดไป */}
-    }
-
-    if (!mounted) return;
-
-    if (rawList == null) {
-      setState(() {
-        isLoadingMeters = false;
-        metersError = 'โหลดรายการมิเตอร์ไม่สำเร็จ';
-        meters = [];
-      });
-      return;
-    }
-
-    final parsed = <TenantMeter>[];
-    for (final e in rawList) {
-      try {
-        parsed.add(TenantMeter.fromJson(Map<String, dynamic>.from(e)));
-      } catch (_) {}
-    }
-
-    setState(() {
-      meters = parsed;
-      isLoadingMeters = false;
-    });
   }
 
   Future<void> _loadTenantData() async {
@@ -310,21 +240,17 @@ class _RoomOverviewPageState extends State<RoomOverviewPage> {
           .get(Uri.parse('$apiBaseUrl/api/tenant-room-detail/$tenantId'))
           .timeout(const Duration(seconds: 12));
 
+      debugPrint('[ROOM-OV] status=${res.statusCode}');
+      debugPrint('[ROOM-OV] body=${res.body}');
+
       if (res.statusCode == 200) {
         final j = jsonDecode(res.body) as Map<String, dynamic>;
+
         final vm = TenantRoomOverview.fromJson(j);
         setState(() {
           overview = vm;
           roomNumber = (vm.roomNumber).isNotEmpty ? vm.roomNumber : null;
         });
-
-        // ✅ โหลดรูปเฉพาะเมื่อ roomNumber พร้อม
-        if (roomNumber != null && roomNumber!.isNotEmpty) {
-          // ไม่ await เพื่อไม่ให้ UI ค้าง
-          unawaited(fetchTenantMeters());
-          // แต่ถ้าอยาก await ก็ได้ จะเห็น loading นานหน่อย
-          unawaited(fetchRoomImages());
-        }
       } else {
         setState(() => overview = null);
       }
@@ -448,7 +374,6 @@ class _RoomOverviewPageState extends State<RoomOverviewPage> {
                     await fetchRoomOverviewByTenant(); // โหลด overview ใหม่
                     await fetchRoomImages(); // โหลดรูป (ต้องพึ่ง roomNumber)
                     await fetchNotifications(); // โหลดแจ้งเตือน
-                    await fetchTenantMeters();
                   },
                   child: SingleChildScrollView(
                     physics: const AlwaysScrollableScrollPhysics(),
@@ -507,11 +432,16 @@ class _RoomOverviewPageState extends State<RoomOverviewPage> {
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
-                                      "เข้าเมื่อ ${formatDateOnly(overview!.startDate)}",
+                                      "เข้าเมื่อ ${(() {
+                                        final v =
+                                            formatDateOnly(overview?.startDate);
+                                        debugPrint(
+                                            '[ROOM-OV] UI formatDateOnly(${overview?.startDate}) => $v');
+                                        return v;
+                                      })()}",
                                       style: const TextStyle(
-                                        fontSize: 14,
-                                        color: AppColors.textSecondary,
-                                      ),
+                                          fontSize: 14,
+                                          color: AppColors.textSecondary),
                                     ),
                                   ],
                                 ),
@@ -612,102 +542,6 @@ class _RoomOverviewPageState extends State<RoomOverviewPage> {
                         ),
 
                         const SizedBox(height: 24),
-
-                        // หัวข้อ
-                        const SizedBox(height: 24),
-                        const _SectionHeader(text: 'มิเตอร์ของห้อง'),
-                        const SizedBox(height: 12),
-
-// การ์ดรายการมิเตอร์
-                        _Card(
-                          padding: const EdgeInsets.all(20),
-                          child: isLoadingMeters
-                              ? const Center(
-                                  child: CircularProgressIndicator(
-                                      color: AppColors.primary))
-                              : (metersError != null)
-                                  ? Text(metersError!,
-                                      style: const TextStyle(color: Colors.red))
-                                  : (meters.isEmpty)
-                                      ? const Text(
-                                          'ยังไม่มีมิเตอร์ที่ผูกกับห้องนี้',
-                                          style: TextStyle(
-                                              color: AppColors.textSecondary))
-                                      : Column(
-                                          children: meters
-                                              .map((m) => ListTile(
-                                                    contentPadding:
-                                                        const EdgeInsets
-                                                            .symmetric(
-                                                            vertical: 6,
-                                                            horizontal: 4),
-                                                    leading: CircleAvatar(
-                                                      backgroundColor: AppColors
-                                                          .primaryLight,
-                                                      child: Icon(
-                                                          m.isCut
-                                                              ? Icons.power_off
-                                                              : Icons
-                                                                  .electric_bolt,
-                                                          color: AppColors
-                                                              .primaryDark),
-                                                    ),
-                                                    title: Text(
-                                                        m.name ?? m.deviceId,
-                                                        style: const TextStyle(
-                                                            fontWeight:
-                                                                FontWeight
-                                                                    .w700)),
-                                                    subtitle: Text(
-                                                        'เครดิต ${m.creditKwh.toStringAsFixed(2)} kWh'),
-                                                    trailing: Container(
-                                                      padding: const EdgeInsets
-                                                          .symmetric(
-                                                          horizontal: 8,
-                                                          vertical: 4),
-                                                      decoration: BoxDecoration(
-                                                        color: m.isCut
-                                                            ? Colors
-                                                                .red.shade700
-                                                            : (m.thresholdCritical !=
-                                                                        null &&
-                                                                    m.creditKwh <=
-                                                                        m
-                                                                            .thresholdCritical!)
-                                                                ? Colors.orange
-                                                                    .shade800
-                                                                : (m.thresholdLow !=
-                                                                            null &&
-                                                                        m.creditKwh <=
-                                                                            m
-                                                                                .thresholdLow!)
-                                                                    ? Colors
-                                                                        .orange
-                                                                        .shade600
-                                                                    : AppColors
-                                                                        .primary,
-                                                        borderRadius:
-                                                            BorderRadius
-                                                                .circular(8),
-                                                      ),
-                                                      child: Text(m.stateLabel,
-                                                          style:
-                                                              const TextStyle(
-                                                                  color: Colors
-                                                                      .white)),
-                                                    ),
-                                                    onTap: () {
-                                                      Navigator.pushNamed(
-                                                          context,
-                                                          '/tenant/purchase',
-                                                          arguments: {
-                                                            'meterId': m.id
-                                                          });
-                                                    },
-                                                  ))
-                                              .toList(),
-                                        ),
-                        ),
 
                         // การ์ด: แจ้งเตือน
                         const _SectionHeader(text: 'แจ้งเตือน'),

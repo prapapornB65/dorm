@@ -11,6 +11,7 @@ import 'package:flutter_application_1/widgets/neumorphic_card.dart';
 import 'package:flutter_application_1/widgets/stat_tile.dart';
 import 'package:flutter_application_1/theme/app_theme.dart';
 import 'package:flutter_application_1/color_app.dart';
+import 'package:flutter_application_1/widgets/gradient_app_bar.dart';
 
 final url = '$apiBaseUrl/api/some-endpoint';
 
@@ -86,11 +87,12 @@ class _WalletPageState extends State<WalletPage> {
   Widget build(BuildContext context) {
     // ✅ ใช้ GradientScaffold เพื่อได้พื้นหลังไล่สี + แผ่นพื้นขาวโค้งด้านใน
     return GradientScaffold(
-      appBar: AppBar(title: const Text('กระเป๋าเงิน')),
+      appBar: const GradientAppBar(
+          title: 'กระเป๋าเงิน'), // ✅ หัวแบบเดียวกับ Profile
+      topRadius: 0, // ✅ ชนขอบบน ไม่โค้ง
       body: isLoading
           ? const Center(
-              child: CircularProgressIndicator(color: AppColors.primary),
-            )
+              child: CircularProgressIndicator(color: AppColors.primary))
           : SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
               child: Column(
@@ -108,7 +110,7 @@ class _WalletPageState extends State<WalletPage> {
                     const SizedBox(height: 16),
                   ],
 
-                  // ✅ แถวบน: การ์ดยอดเงิน + ปุ่ม Top Up ไล่สี
+                  // การ์ดยอดเงิน + ปุ่มเติมเงิน
                   Row(
                     children: [
                       Expanded(child: _balanceCard(walletBalance)),
@@ -116,64 +118,59 @@ class _WalletPageState extends State<WalletPage> {
                       SizedBox(
                         width: 120,
                         child: AppButton(
-                            label: 'เติมเงิน',
-                            icon: Icons.add,
-                            expand: false,
-                            onPressed: () async {
-                              final ok = await Navigator.push<bool>(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) =>
-                                      TopUpPage(tenantId: widget.tenantId),
-                                ),
-                              );
-
-                              if (!mounted) return;
-                              if (ok == true) {
-                                await fetchWalletData(); 
-                                setState(() {}); 
-                              }
-                            }),
+                          label: 'เติมเงิน',
+                          icon: Icons.add,
+                          expand: false,
+                          onPressed: () async {
+                            final ok = await Navigator.push<bool>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    TopUpPage(tenantId: widget.tenantId),
+                              ),
+                            );
+                            if (!mounted) return;
+                            if (ok == true) {
+                              await fetchWalletData();
+                              setState(() {});
+                            }
+                          },
+                        ),
                       ),
                     ],
                   ),
 
                   const SizedBox(height: 22),
 
-                  // ✅ Tiles หน่วยคงเหลือ สไตล์นีโอมอร์ฟิก
-                  Row(
+                  // หน่วยคงเหลือ: น้ำบน / ไฟล่าง (ตามที่คุยกัน)
+                  Column(
                     children: [
-                      Expanded(
-                        child: StatTile(
-                          title: 'น้ำคงเหลือ',
-                          value: waterUnit != null
-                              ? '${waterUnit!} หน่วย'
-                              : 'กำลังโหลด...',
-                          subtitle: waterUnitPrice != null
-                              ? 'ราคาน้ำ: ${waterUnitPrice!.toStringAsFixed(2)} ฿/หน่วย'
-                              : 'กำลังโหลดราคา...',
-                          leading: _iconBadge(Icons.water_drop),
-                        ),
+                      StatTile(
+                        title: 'น้ำคงเหลือ',
+                        value: waterUnit != null
+                            ? '${waterUnit!} หน่วย'
+                            : 'กำลังโหลด...',
+                        subtitle: waterUnitPrice != null
+                            ? 'ราคาน้ำ: ${waterUnitPrice!.toStringAsFixed(2)} ฿/หน่วย'
+                            : 'กำลังโหลดราคา...',
+                        leading: _iconBadge(Icons.water_drop),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: StatTile(
-                          title: 'ไฟฟ้าคงเหลือ',
-                          value: electricUnit != null
-                              ? '${electricUnit!} หน่วย'
-                              : 'กำลังโหลด...',
-                          subtitle: electricUnitPrice != null
-                              ? 'ราคาไฟ: ${electricUnitPrice!.toStringAsFixed(2)} ฿/หน่วย'
-                              : 'กำลังโหลดราคา...',
-                          leading: _iconBadge(Icons.flash_on),
-                        ),
+                      const SizedBox(height: 12),
+                      StatTile(
+                        title: 'ไฟฟ้าคงเหลือ',
+                        value: electricUnit != null
+                            ? '${electricUnit!} หน่วย'
+                            : 'กำลังโหลด...',
+                        subtitle: electricUnitPrice != null
+                            ? 'ราคาไฟ: ${electricUnitPrice!.toStringAsFixed(2)} ฿/หน่วย'
+                            : 'กำลังโหลดราคา...',
+                        leading: _iconBadge(Icons.flash_on),
                       ),
                     ],
                   ),
 
                   const SizedBox(height: 24),
 
-                  // ✅ ปุ่มหลัก ซื้อหน่วยเพิ่มเติม (ไล่สี)
                   AppButton(
                     label: 'ซื้อหน่วยเพิ่มเติม',
                     icon: Icons.shopping_bag_outlined,
@@ -195,10 +192,6 @@ class _WalletPageState extends State<WalletPage> {
                       }
                     },
                   ),
-
-                  const SizedBox(height: 12),
-
-                  // (ถ้าต้องการรายการล่าสุด เพิ่มต่อด้านล่างได้)
                 ],
               ),
             ),

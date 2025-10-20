@@ -6,13 +6,14 @@ import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'Register_page.dart';
 import 'package:flutter_application_1/tenantt/main_navigation.dart';
-import 'package:flutter_application_1/owner/building/building.dart'
-    hide apiBaseUrl;
+import 'package:flutter_application_1/owner/building/building.dart';
 import 'package:flutter_application_1/utils/shared_prefs_helper.dart';
 import 'package:flutter_application_1/config/api_config.dart';
+import 'package:flutter_application_1/admin/home/AdminDashboard.dart';
 
 class ApiClient {
   final http.Client _client = http.Client();
+  static const _timeout = Duration(seconds: 8);
 
   Future<Map<String, String>> _headers({bool auth = true}) async {
     final base = {'Content-Type': 'application/json'};
@@ -23,28 +24,36 @@ class ApiClient {
     return {...base, 'Authorization': 'Bearer $token'};
   }
 
+  Uri _u(String path) => Uri.parse('$apiBaseUrl$path');
+
   Future<http.Response> get(String path, {bool auth = true}) async {
     final headers = await _headers(auth: auth);
-    return _client.get(Uri.parse('$apiBaseUrl$path'), headers: headers);
+    debugPrint('[API][GET] ${_u(path)}');
+    return _client.get(_u(path), headers: headers).timeout(_timeout);
   }
 
   Future<http.Response> post(String path,
       {Object? body, bool auth = true}) async {
     final headers = await _headers(auth: auth);
-    return _client.post(Uri.parse('$apiBaseUrl$path'),
-        headers: headers, body: jsonEncode(body));
+    debugPrint('[API][POST] ${_u(path)} body=$body');
+    return _client
+        .post(_u(path), headers: headers, body: jsonEncode(body))
+        .timeout(_timeout);
   }
 
   Future<http.Response> put(String path,
       {Object? body, bool auth = true}) async {
     final headers = await _headers(auth: auth);
-    return _client.put(Uri.parse('$apiBaseUrl$path'),
-        headers: headers, body: jsonEncode(body));
+    debugPrint('[API][PUT] ${_u(path)} body=$body');
+    return _client
+        .put(_u(path), headers: headers, body: jsonEncode(body))
+        .timeout(_timeout);
   }
 
   Future<http.Response> delete(String path, {bool auth = true}) async {
     final headers = await _headers(auth: auth);
-    return _client.delete(Uri.parse('$apiBaseUrl$path'), headers: headers);
+    debugPrint('[API][DELETE] ${_u(path)}');
+    return _client.delete(_u(path), headers: headers).timeout(_timeout);
   }
 }
 
@@ -187,13 +196,14 @@ class _LoginPageState extends State<LoginPage> {
   String _pendingStatus = 'pending';
   Timer? _statusTimer;
   int? _approvalId;
+  bool _lookupLoading = false;
 
   @override
   void initState() {
     super.initState();
     _loadSavedEmail();
 
-    // ถ้ายังล็อกอินค้างไว้ ให้ลองเช็ค role+status อัตโนมัติ
+    // ✅ Silent auto-login: navigate เมื่อ approved เท่านั้น
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
@@ -205,70 +215,32 @@ class _LoginPageState extends State<LoginPage> {
         if (resp.statusCode != 200) return;
 
         final data = jsonDecode(resp.body) as Map<String, dynamic>;
-        final role = (data['role'] ?? '').toString();
-        final int? id = (data['id'] as num?)?.toInt(); // ✅ อาจเป็น null
-        final int? approvalId =
-            (data['approvalId'] as num?)?.toInt(); // ✅ สำหรับคิวอนุมัติ
-        final status = (data['status'] ?? '').toString().toLowerCase();
+        final role = (data['role'] ?? '').toString().trim().toLowerCase();
+        final int? id = (data['id'] is num)
+            ? (data['id'] as num).toInt()
+            : int.tryParse('${data['id'] ?? data['userId'] ?? ''}');
 
-        if (role == 'tenant') {
-          // ⬅️ อยู่ในคิวอนุมัติ (ยังไม่มี TenantID)
-          if (id == null && approvalId != null) {
-            if (!mounted) return;
-            setState(() {
-              _approvalId = approvalId;
-              _pendingTenantId = null;
-              _pendingStatus = status.isEmpty ? 'pending' : status;
-            });
-            _statusTimer?.cancel();
-            _statusTimer = Timer.periodic(
-                const Duration(seconds: 25), (_) => _pollApproval());
-            return;
-          }
-
-          // ⬅️ มี TenantID แล้ว -> เช็กสถานะจากตาราง Tenant
-          if (id != null) {
-            final st = await api.get('/api/tenant/$id/status');
-            if (st.statusCode == 200) {
-              final s = (jsonDecode(st.body)['status'] ?? '')
-                  .toString()
-                  .toLowerCase();
-              if (s == 'approved') {
-                if (!mounted) return;
-                Navigator.pushReplacement(
+        if (role == 'tenant' && id != null) {
+          // เช็คสถานะตาราง Tenant แบบเงียบ ๆ
+          final st = await api.get('/api/tenant/$id/status');
+          if (st.statusCode == 200) {
+            final s =
+                (jsonDecode(st.body)['status'] ?? '').toString().toLowerCase();
+            if (s == 'approved' && mounted) {
+              Navigator.pushReplacement(
                   context,
                   MaterialPageRoute(
-                      builder: (_) => MainNavigation(tenantId: id)),
-                );
-              } else {
-                if (!mounted) return;
-                setState(() {
-                  _pendingTenantId = id;
-                  _pendingStatus = s.isEmpty ? 'pending' : s;
-                });
-                _statusTimer?.cancel();
-                _statusTimer = Timer.periodic(const Duration(seconds: 25),
-                    (_) => _checkPendingStatusOnce());
-              }
+                      builder: (_) => MainNavigation(tenantId: id)));
             }
-            return;
           }
-        }
-
-        // Owner
-        if (role == 'owner' && id != null) {
-          if (!mounted) return;
+        } else if (role == 'owner' && id != null && mounted) {
           Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-                builder: (_) => BuildingSelectionScreen(ownerId: id)),
-          );
-          return;
+              context,
+              MaterialPageRoute(
+                  builder: (_) => BuildingSelectionScreen(ownerId: id)));
         }
-        // อื่น ๆ: ค้างที่หน้า Login เงียบ ๆ
-      } catch (_) {
-        // เงียบไว้
-      }
+        // ถ้ายังไม่ approved → เงียบไว้ ไม่โชว์การ์ด
+      } catch (_) {/* เงียบ */}
     });
   }
 
@@ -280,18 +252,82 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
+  Future<void> _lookupApprovalByEmail(String email) async {
+    if (email.isEmpty) {
+      setState(() => _emailError = 'กรอกอีเมลก่อนตรวจสถานะ');
+      return;
+    }
+    setState(() {
+      _lookupLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      // ตัวอย่าง endpoint: ปรับ path ให้ตรงกับหลังบ้านคุณ
+      final url =
+          Uri.parse('$apiBaseUrl/api/tenant-approval/lookup?email=$email');
+      final r = await http.get(url).timeout(const Duration(seconds: 12));
+
+      if (r.statusCode == 404) {
+        setState(() {
+          _approvalId = null;
+          _pendingStatus = 'not_found';
+          _errorMessage = 'ไม่พบคำขอสมัครด้วยอีเมลนี้';
+        });
+        return;
+      }
+      if (r.statusCode != 200) {
+        setState(() => _errorMessage = 'ตรวจสถานะไม่สำเร็จ (${r.statusCode})');
+        return;
+      }
+
+      final j = jsonDecode(r.body) as Map<String, dynamic>;
+      final status = (j['status'] ?? 'pending').toString().trim().toLowerCase();
+      final approvalId = (j['approvalId'] as num?)?.toInt();
+      final tenantId = (j['tenantId'] as num?)?.toInt();
+
+      if (status == 'approved' && tenantId != null) {
+        // อนุมัติแล้ว ⇒ ตอนนี้คุณควรสามารถล็อกอินได้ปกติด้วยอีเมล/รหัสผ่าน
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('อนุมัติแล้ว • ลองเข้าสู่ระบบได้เลย')),
+        );
+        setState(() {
+          _approvalId = null;
+          _pendingStatus = 'approved';
+        });
+        return;
+      }
+
+      // pending / rejected ⇒ โชว์การ์ด + ตั้ง timer poll
+      setState(() {
+        _approvalId = approvalId;
+        _pendingStatus = status;
+      });
+
+      _statusTimer?.cancel();
+      if (approvalId != null && status == 'pending') {
+        _statusTimer =
+            Timer.periodic(const Duration(seconds: 25), (_) => _pollApproval());
+      }
+    } catch (_) {
+      setState(() => _errorMessage = 'เชื่อมต่อไม่สำเร็จ');
+    } finally {
+      if (mounted) setState(() => _lookupLoading = false);
+    }
+  }
+
   Future<void> _pollApproval() async {
     if (_approvalId == null) return;
     try {
-      final token = await FirebaseAuth.instance.currentUser!.getIdToken(true);
-      final r = await http.get(
-        Uri.parse('$apiBaseUrl/api/tenant-approval/${_approvalId}/status'),
-        headers: {'Authorization': 'Bearer $token'},
-      ).timeout(const Duration(seconds: 12));
+      // ไม่ต้องใช้ token
+      final r = await http
+          .get(Uri.parse(
+              '$apiBaseUrl/api/tenant-approval/${_approvalId}/status'))
+          .timeout(const Duration(seconds: 12));
 
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
-        final s = (j['status'] ?? '').toString().toLowerCase();
+        final s = (j['status'] ?? '').toString().trim().toLowerCase();
         final tenantId = (j['tenantId'] as num?)?.toInt();
 
         setState(() => _pendingStatus = s);
@@ -299,14 +335,31 @@ class _LoginPageState extends State<LoginPage> {
         if (s == 'approved' && tenantId != null) {
           _statusTimer?.cancel();
           if (!mounted) return;
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-                builder: (_) => MainNavigation(tenantId: tenantId)),
-          );
+
+          final signedIn = FirebaseAuth.instance.currentUser != null;
+          if (signedIn) {
+            // เคสมี session อยู่ → เข้าแอปได้เลย
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => MainNavigation(tenantId: tenantId)),
+            );
+          } else {
+            // ยังไม่ได้ล็อกอิน → แจ้งเตือนและปลดล็อกปุ่ม
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('อนุมัติแล้ว • กรุณาเข้าสู่ระบบ')),
+            );
+            setState(() {
+              _approvalId = null; // ปลดล็อกปุ่มเข้าสู่ระบบ
+              _pendingTenantId = null;
+              _pendingStatus = 'approved';
+            });
+          }
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      // เงียบได้
+    }
   }
 
   Future<void> _checkPendingStatusOnce() async {
@@ -314,8 +367,10 @@ class _LoginPageState extends State<LoginPage> {
     try {
       final resp = await api.get('/api/tenant/${_pendingTenantId!}/status');
       if (resp.statusCode == 200) {
-        final s =
-            (jsonDecode(resp.body)['status'] ?? '').toString().toLowerCase();
+        final s = (jsonDecode(resp.body)['status'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
         if (s == 'approved') {
           _statusTimer?.cancel();
           if (!mounted) return;
@@ -361,25 +416,37 @@ class _LoginPageState extends State<LoginPage> {
         auth: false,
         body: {'idToken': idToken},
       ).timeout(const Duration(seconds: 15));
-
+      debugPrint('[LOGIN] /api/login -> ${resp.statusCode}  body=${resp.body}');
       if (resp.statusCode != 200) {
         final body = resp.body.isNotEmpty ? jsonDecode(resp.body) : {};
         throw Exception(body['message'] ?? 'เข้าสู่ระบบไม่สำเร็จ');
       }
 
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
-      final role = (data['role'] ?? '').toString();
-      final int? id = (data['id'] as num?)?.toInt(); // ✅ อาจเป็น null
-      final int? approvalId =
-          (data['approvalId'] as num?)?.toInt(); // ✅ สำหรับคิวอนุมัติ
-      final statusFromLogin = (data['status'] ?? '').toString().toLowerCase();
 
-      // 3) บันทึกค่าเบื้องต้น
+// ทำให้ robust ต่อรูปแบบ response ต่างๆ
+      final role = (data['role'] ?? '').toString().trim().toLowerCase();
+      final dynamic _rawId = data['id'] ?? data['userId'];
+      final int? id =
+          (_rawId is num) ? _rawId.toInt() : int.tryParse(('$_rawId'));
+      final dynamic _rawApproval = data['approvalId'] ?? data['approval_id'];
+      final int? approvalId = (_rawApproval is num)
+          ? _rawApproval.toInt()
+          : int.tryParse(('$_rawApproval'));
+      final statusFromLogin =
+          (data['status'] ?? '').toString().trim().toLowerCase();
+
       await SharedPrefsHelper.saveSavedEmail(email);
-      if (role == 'tenant' && id != null) {
-        await SharedPrefsHelper.saveTenantId(id);
-      } else if (role == 'owner' && id != null) {
-        await SharedPrefsHelper.saveOwnerId(id);
+      if (role == 'tenant') {
+        await _resolveTenantState(
+          email: email,
+          tenantId: id,
+          approvalId: approvalId,
+          statusFromLogin: statusFromLogin,
+          showUi: true,
+        );
+        setState(() => _isLoading = false);
+        return; // จบที่นี่ ไม่ต้องไปส่วน owner/admin
       }
 
       // 4) (เฉพาะ tenant) กรณี "รออนุมัติ" — ยังไม่มี TenantID แต่มี approvalId
@@ -424,7 +491,8 @@ class _LoginPageState extends State<LoginPage> {
           if (statusResp.statusCode == 200) {
             final statusJson =
                 jsonDecode(statusResp.body) as Map<String, dynamic>;
-            final s = (statusJson['status'] ?? '').toString().toLowerCase();
+            final s =
+                (statusJson['status'] ?? '').toString().trim().toLowerCase();
 
             if (s != 'approved') {
               if (!mounted) return;
@@ -472,6 +540,11 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
 
       if (role == 'tenant' && id != null) {
+        // ✅ เรียกโปรวิชัน (ทำครั้งแรก/ซ้ำก็ไม่พัง)
+        try {
+          await api.post('/api/tenant/$id/provision'); // แค่บรรทัดนี้
+        } catch (_) {}
+
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => MainNavigation(tenantId: id)),
@@ -482,11 +555,15 @@ class _LoginPageState extends State<LoginPage> {
           MaterialPageRoute(
               builder: (_) => BuildingSelectionScreen(ownerId: id)),
         );
-      } else if (role == 'admin') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('ล็อกอินเป็น Admin สำเร็จ (ยังไม่มีหน้าจอ)')),
+      } else if (role == 'admin' && id != null) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => CentralAdminDashboardScreen(adminId: id),
+          ),
         );
+      } else if (role == 'admin' && id == null) {
+        setState(() => _errorMessage = 'ไม่พบ adminId จากเซิร์ฟเวอร์');
       } else {
         // โค้ดมาถึงตรงนี้แปลว่าไม่ได้เข้ากลุ่มไหน (เช่น tenant pending แต่ดันไม่มี approvalId)
         setState(() =>
@@ -494,24 +571,23 @@ class _LoginPageState extends State<LoginPage> {
       }
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
-      setState(() {
-        switch (e.code) {
-          case 'invalid-email':
-            _emailError = 'รูปแบบอีเมลไม่ถูกต้อง';
-            break;
-          case 'user-not-found':
-            _emailError = 'ไม่พบผู้ใช้ในระบบ';
-            break;
-          case 'wrong-password':
-            _passwordError = 'รหัสผ่านไม่ถูกต้อง';
-            break;
-          case 'user-disabled':
-            _errorMessage = 'บัญชีถูกปิดการใช้งาน';
-            break;
-          default:
-            _errorMessage = 'เกิดข้อผิดพลาด: ${e.message}';
-        }
-      });
+      switch (e.code) {
+        case 'user-not-found':
+          // ✅ ผู้เช่ายังไม่มี Firebase user เพราะยังไม่อนุมัติ
+          await _lookupApprovalByEmail(_emailController.text.trim());
+          break;
+        case 'invalid-email':
+          setState(() => _emailError = 'รูปแบบอีเมลไม่ถูกต้อง');
+          break;
+        case 'wrong-password':
+          setState(() => _passwordError = 'รหัสผ่านไม่ถูกต้อง');
+          break;
+        case 'user-disabled':
+          setState(() => _errorMessage = 'บัญชีถูกปิดการใช้งาน');
+          break;
+        default:
+          setState(() => _errorMessage = 'เกิดข้อผิดพลาด: ${e.message}');
+      }
     } on http.ClientException {
       if (!mounted) return;
       setState(() => _errorMessage = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้');
@@ -525,6 +601,84 @@ class _LoginPageState extends State<LoginPage> {
     } finally {
       if (!mounted) return;
       setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _resolveTenantState({
+    required String email,
+    int? tenantId,
+    int? approvalId,
+    String? statusFromLogin,
+    bool showUi = true,
+  }) async {
+    String norm(String? s) => (s ?? '').trim().toLowerCase();
+
+    // 1) เช็คด้วย tenantId ก่อน
+    if (tenantId != null) {
+      try {
+        final st = await api.get('/api/tenant/$tenantId/status');
+        debugPrint(
+            '[LOGIN] GET /tenant/$tenantId/status -> ${st.statusCode} ${st.body}');
+        if (st.statusCode == 200) {
+          final s = norm(jsonDecode(st.body)['status']);
+          if (s == 'approved') {
+            if (!mounted) return;
+            Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => MainNavigation(tenantId: tenantId)));
+            return;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 2) เช็คซ้ำด้วย email (ใช้สถานะจาก TenantApproval เป็นหลัก)
+    try {
+      final r = await http
+          .get(Uri.parse('$apiBaseUrl/api/tenant-status-by-email?email=$email'))
+          .timeout(const Duration(seconds: 12));
+      debugPrint(
+          '[LOGIN] GET /tenant-status-by-email -> ${r.statusCode} ${r.body}');
+      if (r.statusCode == 200) {
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        final s = norm(j['status']);
+        final tid = (j['tenantId'] as num?)?.toInt() ?? tenantId;
+
+        if (s == 'approved' && tid != null) {
+          if (!mounted) return;
+          Navigator.pushReplacement(context,
+              MaterialPageRoute(builder: (_) => MainNavigation(tenantId: tid)));
+          return;
+        }
+
+        if (showUi && mounted) {
+          setState(() {
+            _approvalId = (j['approvalId'] as num?)?.toInt() ?? approvalId;
+            _pendingTenantId = tid;
+            _pendingStatus = s.isEmpty ? 'pending' : s;
+          });
+          _statusTimer?.cancel();
+          if (_approvalId != null && _pendingStatus == 'pending') {
+            _statusTimer = Timer.periodic(
+                const Duration(seconds: 25), (_) => _pollApproval());
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('บัญชีกำลังรออนุมัติ')),
+          );
+        }
+        return;
+      }
+    } catch (_) {}
+
+    // 3) กันตก
+    if (showUi && mounted) {
+      setState(() {
+        _approvalId = approvalId;
+        _pendingTenantId = tenantId;
+        _pendingStatus =
+            norm(statusFromLogin).isEmpty ? 'pending' : norm(statusFromLogin);
+      });
     }
   }
 
@@ -656,58 +810,45 @@ class _LoginPageState extends State<LoginPage> {
                     const SizedBox(height: 22),
 
                     // ปุ่มชมพูวงรี (เข้าสู่ระบบ)
-                    SizedBox(
-                      width: double.infinity,
-                      height: 48,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFFF6B6B),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(28),
-                          ),
-                          elevation: 0,
-                        ),
-                        // ถ้ากำลังโหลด หรือกำลัง "รออนุมัติ" → ปิดปุ่มไว้
-                        onPressed: (_isLoading ||
-                                _approvalId != null ||
-                                _pendingTenantId != null)
-                            ? null
-                            : _signInWithEmailAndPassword,
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            Opacity(
-                              opacity: _isLoading ? 0.0 : 1.0,
-                              child: Text(
-                                _loginSuccess ? 'สำเร็จ' : 'เข้าสู่ระบบ',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  letterSpacing: 0.2,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed:
+                                _isLoading ? null : _signInWithEmailAndPassword,
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                Opacity(
+                                  opacity: _isLoading ? 0.0 : 1.0,
+                                  child: Text(
+                                      _loginSuccess ? 'สำเร็จ' : 'เข้าสู่ระบบ',
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w800)),
                                 ),
-                              ),
+                                if (_isLoading)
+                                  const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.2,
+                                      valueColor:
+                                          AlwaysStoppedAnimation(Colors.white),
+                                    ),
+                                  ),
+                              ],
                             ),
-                            if (_isLoading)
-                              const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.2,
-                                  valueColor:
-                                      AlwaysStoppedAnimation(Colors.white),
-                                ),
-                              ),
-                          ],
+                          ),
                         ),
-                      ),
+                      ],
                     ),
+
                     const SizedBox(height: 12),
 
                     // === Pending Card (รองรับ approvalId, tenantId) ===
                     if (_approvalId != null || _pendingTenantId != null) ...[
                       const SizedBox(height: 14),
                       SoftCard(
-                        padding: const EdgeInsets.all(16),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -724,39 +865,46 @@ class _LoginPageState extends State<LoginPage> {
                               Text('หมายเลขคำขอ: #$_approvalId'),
                             Text('สถานะปัจจุบัน: $_pendingStatus'),
                             const SizedBox(height: 10),
-                            Row(
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
                               children: [
-                                ElevatedButton.icon(
+                                FilledButton.icon(
                                   onPressed: (_approvalId != null)
                                       ? _pollApproval
                                       : _checkPendingStatusOnce,
                                   icon: const Icon(Icons.refresh),
-                                  label: const Text('เช็คอีกครั้ง'),
+                                  label: const Text('เช็คอีกครั้ง',
+                                      overflow: TextOverflow.ellipsis),
+                                  style: FilledButton.styleFrom(
+                                    minimumSize: const Size(0, 44),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12),
+                                  ),
                                 ),
-                                const SizedBox(width: 8),
                                 TextButton.icon(
-                                  onPressed: () async {
+                                  onPressed: () {
                                     _statusTimer?.cancel();
-                                    await FirebaseAuth.instance.signOut();
-                                    if (!mounted) return;
                                     setState(() {
                                       _approvalId = null;
                                       _pendingTenantId = null;
                                       _pendingStatus = 'pending';
                                     });
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                          content: Text('ออกจากระบบแล้ว')),
-                                    );
                                   },
-                                  icon: const Icon(Icons.logout),
-                                  label: const Text('ออกจากระบบ'),
+                                  icon: const Icon(Icons.clear),
+                                  label: const Text('ซ่อนการ์ด',
+                                      overflow: TextOverflow.ellipsis),
+                                  style: TextButton.styleFrom(
+                                    minimumSize: const Size(0, 44),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12),
+                                  ),
                                 ),
                               ],
                             ),
                             const SizedBox(height: 4),
                             const Text(
-                              'เมื่อเจ้าของหออนุมัติแล้ว ระบบจะเด้งเข้าหน้าใช้งานให้อัตโนมัติ',
+                              'เมื่อเจ้าของหออนุมัติแล้ว คุณจะสามารถเข้าสู่ระบบได้ทันที',
                               style: TextStyle(
                                   fontSize: 12, color: AppColors.textSecondary),
                             ),

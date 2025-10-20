@@ -4,12 +4,15 @@ import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../wallet/slipok_api.dart';
 import 'package:flutter_application_1/tenantt/wallet/save_to_server.dart';
 import 'package:flutter_application_1/config/api_config.dart';
-import 'SlipOKError.dart';
+import 'package:flutter_application_1/tenantt/wallet/SlipOkError.dart';
+import 'package:http_parser/http_parser.dart';
+import 'package:mime/mime.dart';
 
 // ✅ ดีไซน์: ใช้ธีม/วิจเจ็ตของเรา
 import 'package:flutter_application_1/theme/app_theme.dart';
@@ -33,6 +36,10 @@ class _TopUpPageState extends State<TopUpPage> {
   String? tenantName;
   String? ownerName;
   String? qrCodeUrl;
+  ImageProvider? _qrProvider;
+  bool _qrReady = false;
+  String? _apiKey;
+  String? _projectId;
 
   @override
   void initState() {
@@ -65,8 +72,9 @@ class _TopUpPageState extends State<TopUpPage> {
     final prefs = await SharedPreferences.getInstance();
     final name = prefs.getString('tenantName');
 
+    // เก็บค่า tenant เบื้องต้น
     setState(() {
-      tenantId = widget.tenantId; // ใช้ tenantId ที่ส่งมา
+      tenantId = widget.tenantId;
       tenantName = name;
     });
 
@@ -83,76 +91,73 @@ class _TopUpPageState extends State<TopUpPage> {
           content: const Text('ไม่พบข้อมูลผู้เช่า กรุณาเข้าสู่ระบบใหม่'),
           actions: [
             TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-              },
-              child: const Text('ตกลง'),
-            ),
+                onPressed: () => Navigator.pop(context),
+                child: const Text('ตกลง')),
           ],
         ),
       );
       return;
     }
 
-    if (tenantId != null) {
-      try {
-        final url = Uri.parse('$apiBaseUrl/api/contact-owner/$tenantId');
-        debugPrint("🌐 เรียก API: $url");
+    try {
+      final url = Uri.parse('$apiBaseUrl/api/contact-owner/$tenantId');
+      debugPrint("🌐 เรียก API: $url");
 
-        final ownerResponse = await http.get(url);
-        debugPrint("📥 สถานะ: ${ownerResponse.statusCode}");
-        debugPrint("📥 ข้อมูลที่ได้: ${ownerResponse.body}");
+      final ownerResponse = await http.get(url);
+      debugPrint("📥 สถานะ: ${ownerResponse.statusCode}");
+      debugPrint("📥 ข้อมูลที่ได้: ${ownerResponse.body}");
 
-        if (ownerResponse.statusCode == 200) {
-          final ownerData = jsonDecode(ownerResponse.body);
-          debugPrint("✅ ownerData: $ownerData");
-
-          setState(() {
-            ownerName = ownerData['OwnerName'];
-            ownerId = (ownerData['OwnerID'] as num?)?.toInt();
-            qrCodeUrl = fixQrCodeUrl(ownerData['QrCodeUrl']);
-          });
-
-          debugPrint("📌 ownerName = $ownerName");
-          debugPrint("📌 ownerId = $ownerId");
-          debugPrint("📌 qrCodeUrl = $qrCodeUrl");
-        } else {
-          debugPrint("❌ โหลดข้อมูลเจ้าของไม่สำเร็จ (status != 200)");
-        }
-      } catch (e) {
-        debugPrint("🚨 error จากการโหลด contact-owner: $e");
+      if (ownerResponse.statusCode != 200) {
+        debugPrint("❌ โหลดข้อมูลเจ้าของไม่สำเร็จ (status != 200)");
+        return;
       }
-    } else {
-      debugPrint("❗ tenantId เป็น null ไม่สามารถโหลดเจ้าของได้");
+
+      final ownerData = jsonDecode(ownerResponse.body);
+      final fixedQr = fixQrCodeUrl(ownerData['QrCodeUrl']);
+
+      // ✅ เตรียมข้อมูล owner ก่อน
+      if (mounted) {
+        final apiKey =
+            (ownerData['apiKey'] ?? ownerData['ApiKey'] ?? ownerData['api_key'])
+                ?.toString();
+        final projectId = (ownerData['projectId'] ??
+                ownerData['ProjectID'] ??
+                ownerData['project_id'])
+            ?.toString();
+
+        setState(() {
+          ownerName = ownerData['OwnerName'];
+          ownerId = (ownerData['OwnerID'] as num?)?.toInt();
+          qrCodeUrl = fixedQr;
+          _apiKey = apiKey?.trim();
+          _projectId = projectId?.trim();
+          _qrReady = false;
+        });
+      }
+
+      // ✅ Preload/Decode รูป QR ให้เสร็จก่อน แล้วค่อยโชว์ (จะไม่สแปม log/ไม่กระตุก)
+      if (fixedQr.isNotEmpty && mounted) {
+        final provider = NetworkImage(fixedQr);
+        await precacheImage(provider, context);
+        if (mounted) {
+          setState(() {
+            _qrProvider = provider;
+            _qrReady = true;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("🚨 error จากการโหลด contact-owner: $e");
     }
   }
 
   int? ownerId;
 
-  Future<String?> fetchOwnerName(int ownerId) async {
-    final url = Uri.parse('$apiBaseUrl/api/owner/$ownerId');
-    debugPrint('Fetching owner name for ownerId: $ownerId');
-
-    final response = await http.get(url);
-    debugPrint('Response: ${response.body}');
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      if (data['error'] == false) {
-        setState(() {
-          ownerName = data['ownerName'];
-        });
-        return data['ownerName'];
-      }
-    }
-    return null;
-  }
-
   Future<Map<String, dynamic>?> fetchOwnerApiInfo(int ownerId) async {
     final url = Uri.parse('$apiBaseUrl/api/owner/$ownerId');
     debugPrint('Fetching owner api info for ownerId: $ownerId');
 
-    final response = await http.get(url);
+    final response = await http.get(url).timeout(const Duration(seconds: 12));
     debugPrint('Response from /api/owner/$ownerId: ${response.body}');
 
     if (response.statusCode == 200) {
@@ -203,27 +208,38 @@ class _TopUpPageState extends State<TopUpPage> {
   }
 
   Future<String> uploadSlipImage(Uint8List imageBytes, String fileName) async {
-    var uri = Uri.parse('$apiBaseUrl/api/upload-slip-image');
-    var request = http.MultipartRequest('POST', uri);
-    request.files.add(
-        http.MultipartFile.fromBytes('file', imageBytes, filename: fileName));
-    var response = await request.send();
+    final uri = Uri.parse('$apiBaseUrl/api/upload-slip-image');
 
-    debugPrint('uploadSlipImage - Response status: ${response.statusCode}');
+    // เดา mime จากชื่อไฟล์/ไบต์
+    final mime =
+        lookupMimeType(fileName, headerBytes: imageBytes) ?? 'image/jpeg';
+    final parts = mime.split('/'); // ['image','jpeg']
 
-    var respStr = await response.stream.bytesToString();
-    debugPrint('uploadSlipImage - Response body: $respStr');
+    final request = http.MultipartRequest('POST', uri)
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          imageBytes,
+          filename: fileName,
+          contentType: MediaType(parts[0], parts[1]), // 👈 สำคัญ
+        ),
+      );
 
-    if (response.statusCode == 200) {
-      var data = jsonDecode(respStr);
-      if (data['error'] == false && data['fileUrl'] != null) {
+    final streamed = await request.send().timeout(const Duration(seconds: 30));
+    final resp = await http.Response.fromStream(streamed)
+        .timeout(const Duration(seconds: 10));
+
+    debugPrint('uploadSlipImage - Response status: ${resp.statusCode}');
+    debugPrint('uploadSlipImage - Response body: ${resp.body}');
+
+    if (resp.statusCode == 200) {
+      final data = jsonDecode(resp.body);
+      if (data['error'] == false && data['fileUrl'] != null)
         return data['fileUrl'];
-      } else {
-        throw Exception(
-            'ไม่สามารถอัปโหลดรูปภาพได้: ${data['message'] ?? 'Unknown error'}');
-      }
+      throw Exception(
+          'ไม่สามารถอัปโหลดรูปภาพได้: ${data['message'] ?? 'Unknown error'}');
     } else {
-      throw Exception('อัปโหลดรูปภาพล้มเหลว: ${response.statusCode}');
+      throw Exception('อัปโหลดรูปภาพล้มเหลว: ${resp.statusCode} ${resp.body}');
     }
   }
 
@@ -239,18 +255,15 @@ class _TopUpPageState extends State<TopUpPage> {
 
     try {
       // STEP 1: เตรียมข้อมูลเจ้าของ
-      final ownerIdNow = ownerId ?? 0;
-      final ownerInfo = await fetchOwnerApiInfo(ownerIdNow);
-      if (ownerInfo == null) {
-        _showResultDialog(
+      // STEP 1: ใช้คีย์จาก contact-owner
+      final apiKey = (_apiKey ?? '').trim();
+      final projectId = (_projectId ?? '').trim();
+      if (apiKey.isEmpty || projectId.isEmpty) {
+        await _showResultDialog(
             success: false,
-            message: "ไม่สามารถดึง API Key หรือ Project ID ได้");
+            message: "ไม่พบ ApiKey/ProjectID จาก contact-owner");
         return;
       }
-      final apiKey = ownerInfo['apiKey'];
-      final projectId = ownerInfo['projectId'];
-      ownerName = ownerInfo['ownerName'];
-      debugPrint('✅ ownerInfo: $ownerInfo');
 
       // STEP 2: เรียก SlipOK
       final result = await uploadToSlipOK(
@@ -415,6 +428,71 @@ class _TopUpPageState extends State<TopUpPage> {
     );
   }
 
+  // แถว key:value สั้นๆ
+  Widget _kv(String k, String v) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+                width: 108,
+                child: Text('$k: ',
+                    style: const TextStyle(fontWeight: FontWeight.w600))),
+            Expanded(child: Text(v)),
+          ],
+        ),
+      );
+
+// กล่องรายละเอียดสลิป
+  Future<void> _showSlipDetailsDialog({
+    required String senderName,
+    required String bankName,
+    required int amount,
+    required DateTime dateTimeLocal,
+    String? roomNumber,
+    String? imageUrl,
+    String? receiverName,
+  }) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    final d = dateTimeLocal;
+    final dateStr = '${d.year}-${two(d.month)}-${two(d.day)}';
+    final timeStr = '${two(d.hour)}:${two(d.minute)}:${two(d.second)}';
+
+    return showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('รายละเอียดสลิป', textAlign: TextAlign.center),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if ((roomNumber ?? '').isNotEmpty) _kv('ห้อง', roomNumber!),
+            _kv('ผู้โอน', senderName),
+            if ((receiverName ?? '').isNotEmpty) _kv('ผู้รับ', receiverName!),
+            _kv('ธนาคารผู้โอน',
+                bankName.isEmpty ? 'พร้อมเพย์/วอลเล็ต' : bankName),
+            _kv('จำนวนเงิน', '$amount บาท'),
+            const SizedBox(height: 8),
+            _kv('วันที่', dateStr),
+            _kv('เวลา', timeStr),
+            if ((imageUrl ?? '').isNotEmpty) ...[
+              const SizedBox(height: 12),
+              const Text('ไฟล์สลิป:',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              Text(imageUrl!, style: const TextStyle(fontSize: 12)),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            child: const Text('ปิด'),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // ✅ เปลี่ยนเฉพาะดีไซน์: ใช้ GradientScaffold + โทน AppColors
@@ -474,61 +552,37 @@ class _TopUpPageState extends State<TopUpPage> {
   }
 
   Widget _paymentBox() {
-    if (qrCodeUrl != null) {
-      debugPrint('QR Code URL: $qrCodeUrl');
-    } else {
-      debugPrint('QR Code URL is null or empty');
-    }
-
-    // ใช้ NeumorphicCard แทน Container
     return NeumorphicCard(
       padding: const EdgeInsets.all(18),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          qrCodeUrl != null && qrCodeUrl!.isNotEmpty
-              ? ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: Image.network(
-                    qrCodeUrl!,
-                    height: 200,
-                    fit: BoxFit.contain,
-                    loadingBuilder: (context, child, loadingProgress) {
-                      if (loadingProgress == null) {
-                        debugPrint('โหลดรูป QR code สำเร็จ');
-                        return child;
-                      }
-                      debugPrint('กำลังโหลดรูป QR code...');
-                      return const SizedBox(
-                        height: 200,
-                        child: Center(
-                          child: CircularProgressIndicator(
-                              color: AppColors.primary),
-                        ),
-                      );
-                    },
-                    errorBuilder: (context, error, stackTrace) {
-                      debugPrint('โหลดรูป QR code ไม่สำเร็จ: $error');
-                      return const SizedBox(
-                        height: 200,
-                        child:
-                            Center(child: Icon(Icons.error, color: Colors.red)),
-                      );
-                    },
-                  ),
-                )
-              : const SizedBox(
-                  height: 200,
-                  child: Center(
-                      child: Icon(Icons.qr_code_2,
-                          size: 64, color: AppColors.textSecondary)),
-                ),
+          // ✅ ถ้ายังไม่พร้อม แสดง progress สั้น ๆ เฉย ๆ
+          if (!_qrReady || _qrProvider == null)
+            const SizedBox(
+              height: 220,
+              child: Center(
+                  child: CircularProgressIndicator(color: AppColors.primary)),
+            )
+          else
+            // ✅ แสดงรูปตรง ๆ ไม่ใช้ loadingBuilder (ตัดสแปม)
+            //   ให้เต็มกว้าง ไม่มีกรอบ ตามที่ขอ
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Image(
+                image: _qrProvider!,
+                width: double.infinity,
+                height: 260,
+                fit: BoxFit.contain, // หรือ BoxFit.cover ถ้าอยากเต็มกว่า
+                filterQuality: FilterQuality.low, // ลดงานเรนเดอร์
+              ),
+            ),
           const SizedBox(height: 12),
           Text(
             ownerName != null
                 ? "ชื่อบัญชี: $ownerName"
                 : "กำลังโหลดชื่อเจ้าของหอพัก...",
-            style: TextStyle(
+            style: const TextStyle(
               color: AppColors.textPrimary,
               fontWeight: FontWeight.w600,
             ),
@@ -552,35 +606,27 @@ class _TopUpPageState extends State<TopUpPage> {
   }
 
   Widget _slipPreview() {
-    return NeumorphicCard(
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          const Text(
-            "แสดงตัวอย่างสลิป",
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 12),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Image.memory(
-              _pickedImageBytes!,
-              height: 280,
-              width: double.infinity,
-              fit: BoxFit.cover,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _fileName ?? '',
-            style: TextStyle(color: AppColors.textSecondary),
-          ),
-        ],
-      ),
+    // ✅ ไม่มีการ์ด/กรอบ ใช้รูปเต็มความกว้าง
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        const Text(
+          "แสดงตัวอย่างสลิป",
+          style: TextStyle(
+              color: AppColors.textPrimary, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 12),
+        Image.memory(
+          _pickedImageBytes!,
+          height: 420, // ← ขยายให้ใหญ่
+          width: double.infinity,
+          fit: BoxFit.contain, // ← ให้พอดีจอ ไม่บิดเบี้ยว
+        ),
+        const SizedBox(height: 8),
+        if (_fileName != null)
+          Text(_fileName!,
+              style: const TextStyle(color: AppColors.textSecondary)),
+      ],
     );
   }
 

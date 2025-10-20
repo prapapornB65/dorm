@@ -2,15 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_application_1/owner/home/OwnerDashboard.dart';
 import 'package:flutter_application_1/owner/building/AddBuilding.dart';
 import 'package:http/http.dart' as http;
+import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform, SocketException;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_application_1/color_app.dart';
-
-final String apiBaseUrl = kIsWeb
-    ? 'http://localhost:3000' // ถ้าเว็บ ใช้ localhost
-    : 'http://10.0.2.2:3000'; // ถ้า emulator android ใช้ 10.0.2.2
+import 'package:flutter_application_1/config/api_config.dart';
 
 class BuildingSelectionScreen extends StatefulWidget {
   final int ownerId;
@@ -54,19 +52,47 @@ class _BuildingSelectionScreenState extends State<BuildingSelectionScreen> {
       errorMessage = null;
     });
 
-    final uri = Uri.parse('$apiBaseUrl/api/buildings');
     final sw = Stopwatch()..start();
+    final uid = FirebaseAuth.instance.currentUser;
+    final token = await uid?.getIdToken(true); // ต่ออายุ token อัตโนมัติ
+
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+
+    // ลองยิงแบบ query ก่อน แล้วค่อย fallback เป็น path
+    final uriPrimary =
+        Uri.parse('$apiBaseUrl/api/buildings?ownerId=${widget.ownerId}');
+    final uriFallback =
+        Uri.parse('$apiBaseUrl/api/owners/${widget.ownerId}/buildings');
+
+    Uri? usedUri;
+    http.Response? resp;
+
     debugPrint(
         '🏁 [BUILDINGS] START fetch @${DateTime.now().toIso8601String()}');
-    debugPrint('🔗 URL: $uri');
     debugPrint('🧭 Platform: ${_platformHint()}   kIsWeb=$kIsWeb');
     debugPrint('⚙️  ownerId: ${widget.ownerId}');
+    debugPrint('🔗 Try 1: $uriPrimary');
 
     try {
-      // Timeout กันค้าง
-      final resp = await http
-          .get(uri)
-          .timeout(const Duration(seconds: 12)); // <- ✨ ปรับได้
+      // ===== Try #1
+      usedUri = uriPrimary;
+      resp = await http
+          .get(usedUri, headers: headers)
+          .timeout(const Duration(seconds: 12));
+
+      // ถ้า 404/405/501 ลองเส้นทางสำรอง
+      if (resp.statusCode == 404 ||
+          resp.statusCode == 405 ||
+          resp.statusCode == 501) {
+        debugPrint('↪️  Fallback to $uriFallback (status=${resp.statusCode})');
+        usedUri = uriFallback;
+        resp = await http
+            .get(usedUri, headers: headers)
+            .timeout(const Duration(seconds: 12));
+      }
 
       sw.stop();
       debugPrint('⏱️  DONE in ${sw.elapsedMilliseconds} ms');
@@ -75,23 +101,32 @@ class _BuildingSelectionScreenState extends State<BuildingSelectionScreen> {
       debugPrint('📦 body.length=${resp.body.length}');
       debugPrint('📦 body.sample=${_short(resp.body)}');
 
-      if (resp.statusCode != 200) {
+      if (resp.statusCode == 401 || resp.statusCode == 403) {
         setState(() {
-          errorMessage =
-              'HTTP ${resp.statusCode}: ${resp.reasonPhrase ?? 'Unknown'}';
+          errorMessage = 'ไม่ได้รับอนุญาต (HTTP ${resp!.statusCode}).\n'
+              '- ตรวจสอบการล็อกอินและสิทธิ์ owner\n'
+              '- Token อาจหมดอายุ ลองออกเข้าใหม่';
           isLoading = false;
         });
         return;
       }
 
-      // ===== Parse JSON: รองรับทั้ง [{...}] และ {data:[...]} =====
+      if (resp.statusCode != 200) {
+        setState(() {
+          errorMessage =
+              'HTTP ${resp!.statusCode}: ${resp.reasonPhrase ?? 'Unknown'}\nURL: $usedUri';
+          isLoading = false;
+        });
+        return;
+      }
+
+      // ===== Parse JSON: รองรับ [{...}] หรือ {data:[...]}
       final dynamic decoded = jsonDecode(resp.body);
       final List<dynamic> rawList =
           (decoded is List) ? decoded : (decoded['data'] as List?) ?? [];
 
-      // ===== Normalize key ชื่อที่ต่างกันไปตาม backend =====
-      List<Map<String, dynamic>> normalized =
-          rawList.map<Map<String, dynamic>>((item) {
+      // ===== Normalize keys
+      final normalized = rawList.map<Map<String, dynamic>>((item) {
         final m = Map<String, dynamic>.from(item as Map);
         int? buildingId = m['buildingId'] ??
             m['BuildingID'] ??
@@ -117,7 +152,7 @@ class _BuildingSelectionScreenState extends State<BuildingSelectionScreen> {
         };
       }).toList();
 
-      // ===== Filter ตาม ownerId =====
+      // ===== ถ้า backend ยังไม่ filter → filter client-side เหมือนเดิม
       final filtered = normalized.where((item) {
         final a = '${item['ownerId']}';
         final b = '${widget.ownerId}';
@@ -134,16 +169,16 @@ class _BuildingSelectionScreenState extends State<BuildingSelectionScreen> {
       debugPrint('✅ RESULT count=${filtered.length}');
       debugPrint(
           '✅ RESULT sample=${filtered.isNotEmpty ? filtered.first : "<empty>"}');
-      if (filtered.isEmpty) {
-        debugPrint(
-            'ℹ️  No buildings for this owner. Check backend filter or ownerId mapping.');
-      }
     } on TimeoutException catch (e) {
       sw.stop();
       debugPrint('⛔ Timeout after ${sw.elapsedMilliseconds} ms: $e');
       setState(() {
         errorMessage =
-            'เชื่อมต่อช้า/ไม่ตอบกลับ (timeout ${sw.elapsed.inSeconds}s)\n- ตรวจสอบว่าเซิร์ฟเวอร์รันอยู่ไหม\n- IP/พอร์ต $apiBaseUrl ถูกต้องไหม\n${kIsWeb ? "- ถ้าเป็นเว็บ อาจติด CORS ที่ backend\n" : ""}';
+            'เชื่อมต่อช้า/ไม่ตอบกลับ (timeout ${sw.elapsed.inSeconds}s)\n'
+            '- ตรวจสอบว่าเซิร์ฟเวอร์รันอยู่ไหม\n'
+            '- IP/พอร์ต $apiBaseUrl ถูกต้องไหม\n'
+            '${kIsWeb ? "- ถ้าเป็นเว็บ อาจติด CORS ที่ backend\n" : ""}'
+            'URL: ${usedUri ?? uriPrimary}';
         isLoading = false;
       });
     } on SocketException catch (e) {
@@ -151,7 +186,7 @@ class _BuildingSelectionScreenState extends State<BuildingSelectionScreen> {
       debugPrint('⛔ Network error: $e');
       setState(() {
         errorMessage =
-            'ต่อเน็ตไม่ได้ หรือเข้าถึง $apiBaseUrl ไม่ได้\nรายละเอียด: $e';
+            'เข้าถึง $apiBaseUrl ไม่ได้ (Network)\nURL: ${usedUri ?? uriPrimary}\nรายละเอียด: $e';
         isLoading = false;
       });
     } on FormatException catch (e) {
@@ -159,7 +194,7 @@ class _BuildingSelectionScreenState extends State<BuildingSelectionScreen> {
       debugPrint('⛔ JSON format error: $e');
       setState(() {
         errorMessage =
-            'รูปแบบ JSON ไม่ถูกต้อง/ไม่ตรงที่คาด\nลองดู log body.sample ด้านล่าง';
+            'รูปแบบ JSON ไม่ถูกต้อง/ไม่ตรงที่คาด\nURL: ${usedUri ?? uriPrimary}\nลองดู log body.sample ด้านล่าง';
         isLoading = false;
       });
     } catch (e, st) {
@@ -167,7 +202,8 @@ class _BuildingSelectionScreenState extends State<BuildingSelectionScreen> {
       debugPrint('⛔ Unexpected error: $e');
       debugPrintStack(stackTrace: st);
       setState(() {
-        errorMessage = 'เกิดข้อผิดพลาดไม่ทราบสาเหตุ: $e';
+        errorMessage =
+            'เกิดข้อผิดพลาดไม่ทราบสาเหตุ: $e\nURL: ${usedUri ?? uriPrimary}';
         isLoading = false;
       });
     }

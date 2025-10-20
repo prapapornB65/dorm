@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_application_1/color_app.dart';
 import 'package:flutter_application_1/widgets/neumorphic_card.dart';
 import 'package:flutter_application_1/config/api_config.dart' show apiBaseUrl;
-import 'package:flutter_application_1/owner/home/approval_page.dart';
-import 'dart:async';
+import 'package:flutter_application_1/widgets/page_header_card.dart';
 import 'package:http/http.dart' as http;
+
+enum TenantStatusFilter { all, active, ended }
 
 class TenantListPage extends StatefulWidget {
   final int buildingId;
@@ -27,15 +29,63 @@ class _TenantListPageState extends State<TenantListPage> {
   bool isLoading = true;
   String? errorMessage;
 
-  // ทั้งหมด / กลุ่มรออนุมัติ / กลุ่มอนุมัติแล้ว
   List<dynamic> tenants = [];
-  List<dynamic> pendingTenants = [];
-  List<dynamic> approvedTenants = [];
+
+  TenantStatusFilter _statusFilter = TenantStatusFilter.all;
+  final TextEditingController _searchCtl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _fetchTenants();
+    _fetchTenantCount();
+  }
+
+  @override
+  void dispose() {
+    _searchCtl.dispose();
+    super.dispose();
+  }
+
+  String _fmt(DateTime? d) => d == null
+      ? ''
+      : '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  DateTime? _parseDate(dynamic v) {
+    if (v == null) return null;
+    if (v is DateTime) return v;
+    return DateTime.tryParse(v.toString());
+  }
+
+  int? _tenantCount;
+
+  Future<void> _fetchTenantCount() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      
+      final idToken = await user.getIdToken();
+      if (idToken == null) return;
+
+      final uri = Uri.parse(
+          '$apiBaseUrl/api/owner/building/${widget.buildingId}/tenant-count');
+      
+      final res = await http.get(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $idToken',
+          'Content-Type': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 10));
+      
+      if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
+      final j = jsonDecode(res.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() => _tenantCount = (j['count'] as num?)?.toInt());
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _tenantCount = null);
+    }
   }
 
   Future<void> _fetchTenants() async {
@@ -44,275 +94,380 @@ class _TenantListPageState extends State<TenantListPage> {
       errorMessage = null;
     });
 
-    final tenantsUri =
-        Uri.parse('$apiBaseUrl/api/building/${widget.buildingId}/tenants');
-    final pendingUri = Uri.parse(
-      '$apiBaseUrl/api/owner/${widget.ownerId}/approvals'
-      '?status=pending&buildingId=${widget.buildingId}&limit=50',
-    );
-
-    List _safeParseList(dynamic raw) {
-      if (raw is List) return raw;
-      if (raw is Map) {
-        final rows = raw['rows'] ?? raw['data'] ?? raw['items'];
-        return rows is List ? rows : const [];
-      }
-      return const [];
-    }
-
-    http.Response? tenantsRes;
-    http.Response? pendingRes;
-
     try {
-      debugPrint('[TENANT] GET $tenantsUri');
-      debugPrint('[PENDING] GET $pendingUri');
-
-      // ยิงพร้อมกัน + ใส่ timeout
-      final tenantsF =
-          http.get(tenantsUri).timeout(const Duration(seconds: 10));
-      final pendingF = http.get(pendingUri).timeout(const Duration(seconds: 3));
-
-      try {
-        tenantsRes = await tenantsF;
-      } catch (e) {
-        debugPrint('[TENANT] $e');
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw Exception('กรุณาเข้าสู่ระบบก่อน');
       }
-      try {
-        pendingRes = await pendingF;
-      } catch (e) {
-        debugPrint('[PENDING] $e');
+      
+      final idToken = await user.getIdToken();
+      if (idToken == null) {
+        throw Exception('ไม่สามารถดึง Token ได้');
       }
 
-      List allTenants = [];
-      if (tenantsRes != null && tenantsRes!.statusCode == 200) {
-        allTenants = _safeParseList(jsonDecode(tenantsRes!.body));
-        debugPrint('[TENANT] 200 items=${allTenants.length}');
-      } else if (tenantsRes != null) {
-        debugPrint(
-            '[TENANT] HTTP ${tenantsRes!.statusCode}: ${tenantsRes!.body}');
+      final params = <String>[];
+      switch (_statusFilter) {
+        case TenantStatusFilter.active:
+          params.add('status=active');
+          break;
+        case TenantStatusFilter.ended:
+          params.add('status=ended');
+          break;
+        case TenantStatusFilter.all:
+          break;
+      }
+      final q = _searchCtl.text.trim();
+      if (q.isNotEmpty) params.add('q=${Uri.encodeComponent(q)}');
+      final qStr = params.isEmpty ? '' : '?${params.join('&')}';
+
+      final tenantsUri = Uri.parse(
+        '$apiBaseUrl/api/owner/building/${widget.buildingId}/tenants$qStr',
+      );
+
+      final res = await http.get(
+        tenantsUri,
+        headers: {
+          'Authorization': 'Bearer $idToken',
+          'Content-Type': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode != 200) {
+        throw Exception('HTTP ${res.statusCode}: ${res.body}');
       }
 
-      List pendings = [];
-      if (pendingRes != null && pendingRes!.statusCode == 200) {
-        pendings = _safeParseList(jsonDecode(pendingRes!.body));
-        debugPrint('[PENDING] 200 items=${pendings.length}');
-      } else if (pendingRes != null) {
-        debugPrint(
-            '[PENDING] HTTP ${pendingRes!.statusCode}: ${pendingRes!.body}');
-      }
+      final raw = jsonDecode(res.body);
+      
+      // ✅ แก้ตรงนี้: เช็ค items, rows, หรือ array ตรงๆ
+      final List<dynamic> list = (raw is List)
+          ? raw
+          : (raw is Map && raw['items'] is List)
+              ? raw['items']
+              : (raw is Map && raw['rows'] is List)
+                  ? raw['rows']
+                  : <dynamic>[];
 
       if (!mounted) return;
-      setState(() {
-        tenants = allTenants;
-        approvedTenants = allTenants;
-        pendingTenants = pendings;
-      });
+      setState(() => tenants = list);
     } catch (e) {
       if (!mounted) return;
       setState(() => errorMessage = 'เกิดข้อผิดพลาด: $e');
     } finally {
-      if (mounted)
-        setState(() => isLoading = false); // ✅ ปิดโหลดไม่ว่าอะไรจะเกิดขึ้น
-      debugPrint(
-          'TenantList build: loading=$isLoading, error=$errorMessage, all=${tenants.length}, pending=${pendingTenants.length}');
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
-  // ====== Navigation ไปหน้าอนุมัติทั้งหมด ======
-  void _goToApprovals() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => OwnerApprovalsPage(
-          ownerId: widget.ownerId,
-          buildingId: widget.buildingId, // ถ้า constructor รองรับ
-          buildingName: widget.buildingName, // ถ้า constructor รองรับ
+  Future<void> _openEditDates(Map tenant) async {
+    final tenantId = tenant['TenantID'] ?? tenant['tenantId'] ?? tenant['id'];
+    if (tenantId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ไม่พบรหัสผู้เช่า')),
+      );
+      return;
+    }
+
+    DateTime? start = _parseDate(tenant['Start']);
+    DateTime? end = _parseDate(tenant['End']);
+
+    final result = await showDialog<(DateTime?, DateTime?)>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('แก้ไขช่วงสัญญาเช่า'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Expanded(child: Text('เริ่มเช่า')),
+                  TextButton.icon(
+                    onPressed: () async {
+                      final d = await showDatePicker(
+                        context: ctx,
+                        initialDate: start ?? DateTime.now(),
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (d != null) setLocal(() => start = d);
+                    },
+                    icon: const Icon(Icons.event),
+                    label: Text(start == null ? 'เลือกวันที่' : _fmt(start)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Expanded(child: Text('สิ้นสุด')),
+                  TextButton.icon(
+                    onPressed: () async {
+                      final d = await showDatePicker(
+                        context: ctx,
+                        initialDate: end ?? (start ?? DateTime.now()),
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (d != null) setLocal(() => end = d);
+                    },
+                    icon: const Icon(Icons.event),
+                    label: Text(end == null ? 'ไม่มีกำหนด' : _fmt(end)),
+                  ),
+                ],
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => setLocal(() => end = null),
+                  child: const Text('ลบวันสิ้นสุด'),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('ยกเลิก'),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (start == null) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('กรุณาเลือกวันเริ่มเช่า')),
+                  );
+                  return;
+                }
+                if (end != null && end!.isBefore(start!)) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('วันสิ้นสุดต้องหลังวันเริ่ม')),
+                  );
+                  return;
+                }
+                Navigator.pop(ctx, (start, end));
+              },
+              child: const Text('บันทึก'),
+            ),
+          ],
         ),
       ),
     );
+
+    if (result == null) return;
+    final (newStart, newEnd) = result;
+
+    await _saveDates(tenantId, newStart!, newEnd);
+    await _fetchTenants();
   }
 
-  // ====== อนุมัติ / ปฏิเสธ จากลิสต์บนสุด (รออนุมัติ) ======
-  Future<void> _approveFromList(Map t) async {
-    try {
-      final approvalId = t['ApprovalID'];
-      if (approvalId == null) throw Exception('ไม่พบรหัสคำขอ');
-
-      final url = Uri.parse(
-        '$apiBaseUrl/api/owner/${widget.ownerId}/approvals/$approvalId/approve',
+  Future<void> _confirmEndTenancy(Map tenant) async {
+    final tenantId = tenant['TenantID'] ?? tenant['tenantId'] ?? tenant['id'];
+    if (tenantId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ไม่พบรหัสผู้เช่า')),
       );
+      return;
+    }
 
-      final resp = await http.put(url);
-      if (resp.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('อนุมัติแล้ว')),
-        );
-        _fetchTenants();
-      } else {
-        throw Exception('HTTP ${resp.statusCode}');
+    final chosen = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+      helpText: 'เลือกวันย้ายออก',
+    );
+    if (chosen == null) return;
+
+    await _endTenancy(tenantId, chosen);
+    await _fetchTenants();
+  }
+
+  Future<void> _endTenancy(dynamic tenantId, DateTime endDate) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw Exception('กรุณาเข้าสู่ระบบก่อน');
       }
+      
+      final idToken = await user.getIdToken();
+      if (idToken == null) {
+        throw Exception('ไม่สามารถดึง Token ได้');
+      }
+
+      final url = Uri.parse('$apiBaseUrl/api/owner/tenants/$tenantId/end');
+      final res = await http.post(
+        url,
+        headers: {
+          'Authorization': 'Bearer $idToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'end': _fmt(endDate)}),
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode != 200) {
+        throw Exception('HTTP ${res.statusCode}: ${res.body}');
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('สิ้นสุดการเช่าสำเร็จ (ห้องถูกคืนเป็นว่าง)')),
+      );
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('ผิดพลาด: $e')));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('ย้ายออกไม่สำเร็จ: $e')),
+      );
     }
   }
 
-  Future<void> _rejectFromList(Map t) async {
+  Future<void> _saveDates(
+      dynamic tenantId, DateTime start, DateTime? end) async {
     try {
-      final approvalId = t['ApprovalID'];
-      if (approvalId == null) throw Exception('ไม่พบรหัสคำขอ');
-
-      final url = Uri.parse(
-        '$apiBaseUrl/api/owner/${widget.ownerId}/approvals/$approvalId/reject',
-      );
-
-      // ใส่เหตุผลเพิ่มได้
-      final resp = await http.put(url,
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'reason': 'ไม่ผ่านการตรวจสอบข้อมูล'}));
-
-      if (resp.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('ปฏิเสธแล้ว')),
-        );
-        _fetchTenants();
-      } else {
-        throw Exception('HTTP ${resp.statusCode}');
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw Exception('กรุณาเข้าสู่ระบบก่อน');
       }
+      
+      final idToken = await user.getIdToken();
+      if (idToken == null) {
+        throw Exception('ไม่สามารถดึง Token ได้');
+      }
+
+      final url = Uri.parse('$apiBaseUrl/api/owner/tenants/$tenantId/dates');
+      final res = await http.patch(
+        url,
+        headers: {
+          'Authorization': 'Bearer $idToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'start': _fmt(start),
+          'end': end == null ? null : _fmt(end),
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode != 200) {
+        throw Exception('HTTP ${res.statusCode}: ${res.body}');
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('อัปเดตวันเช่าสำเร็จ')),
+      );
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('ผิดพลาด: $e')));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('บันทึกไม่สำเร็จ: $e')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    debugPrint(
-        'TenantList build: loading=$isLoading, error=$errorMessage, all=${tenants.length}, pending=${pendingTenants.length}');
     return Scaffold(
-      appBar: AppBar(
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [AppColors.gradientStart, AppColors.gradientEnd],
-              begin: Alignment.centerLeft,
-              end: Alignment.centerRight,
-            ),
-          ),
-        ),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        title: const Text('รายชื่อผู้เช่า'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'รีโหลด',
-            onPressed: _fetchTenants,
-          ),
-        ],
-      ),
       body: RefreshIndicator(
         color: AppColors.primary,
         onRefresh: _fetchTenants,
-        child: Builder(builder: (_) {
-          if (isLoading) {
-            return ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              children: const [
-                SizedBox(height: 200),
-                _CenteredProgress(),
-                SizedBox(height: 400),
-              ],
-            );
-          }
-          if (errorMessage != null) {
-            return ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
-              children: [
-                _IllustratedMessage(
-                  icon: Icons.error_outline_rounded,
-                  iconColor: Colors.red,
-                  title: 'โหลดรายชื่อผู้เช่าไม่สำเร็จ',
-                  message: errorMessage!,
-                ),
-                SizedBox(height: 10),
-                TextButton.icon(
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          children: [
+            PageHeaderCard(
+              leadingIcon: Icons.people_alt_rounded,
+              title: 'ผู้เช่า ',
+              chipText: '${tenants.length} คน',
+              actions: [
+                IconButton(
+                  tooltip: 'รีโหลด',
                   onPressed: _fetchTenants,
-                  icon: Icon(Icons.refresh),
-                  label: Text('ลองอีกครั้ง'),
+                  icon: const Icon(Icons.refresh, color: AppColors.primaryDark),
                 ),
               ],
-            );
-          }
+            ),
 
-          return ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
-            children: [
-              // ====== คำขอรออนุมัติ ======
+            if (isLoading) ...[
+              const SizedBox(height: 120),
+              const _CenteredProgress(),
+              const SizedBox(height: 300),
+            ] else if (errorMessage != null) ...[
+              _IllustratedMessage(
+                icon: Icons.error_outline_rounded,
+                iconColor: Colors.red,
+                title: 'โหลดรายชื่อผู้เช่าไม่สำเร็จ',
+                message: errorMessage!,
+                action: TextButton.icon(
+                  onPressed: _fetchTenants,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('ลองอีกครั้ง'),
+                ),
+              ),
+            ] else ...[
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const _SectionTitle(title: 'คำขอรออนุมัติ'),
-                  TextButton.icon(
-                    onPressed: _goToApprovals,
-                    icon: const Icon(Icons.verified_user_rounded),
-                    label: const Text('ดูทั้งหมด'),
+                  DropdownButton<TenantStatusFilter>(
+                    value: _statusFilter,
+                    items: const [
+                      DropdownMenuItem(
+                          value: TenantStatusFilter.all,
+                          child: Text('ทั้งหมด')),
+                      DropdownMenuItem(
+                          value: TenantStatusFilter.active,
+                          child: Text('กำลังเช่า')),
+                      DropdownMenuItem(
+                          value: TenantStatusFilter.ended,
+                          child: Text('สิ้นสุดการเช่า')),
+                    ],
+                    onChanged: (v) {
+                      if (v == null) return;
+                      setState(() => _statusFilter = v);
+                      _fetchTenants();
+                    },
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      controller: _searchCtl,
+                      decoration: const InputDecoration(
+                        hintText: 'ค้นหา (ชื่อ/อีเมล/เบอร์/เลขห้อง)',
+                        isDense: true,
+                        prefixIcon: Icon(Icons.search),
+                      ),
+                      onSubmitted: (_) => _fetchTenants(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () {
+                      _searchCtl.clear();
+                      setState(() => _statusFilter = TenantStatusFilter.all);
+                      _fetchTenants();
+                    },
+                    child: const Text('ล้างตัวกรอง'),
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 12),
 
-              if (pendingTenants.isEmpty)
+              if (tenants.isEmpty)
                 const NeumorphicCard(
                   padding: EdgeInsets.all(16),
-                  child: Text('ไม่มีคำขอใหม่',
-                      style: TextStyle(color: AppColors.textSecondary)),
-                )
-              else
-                Column(
-                  children: pendingTenants.take(5).map((t) {
-                    final name = (t['FullName'] ??
-                            '${t['FirstName'] ?? ''} ${t['LastName'] ?? ''}')
-                        .toString()
-                        .trim();
-                    return _PendingTenantTile(
-                      name: name.isEmpty ? 'ไม่ทราบชื่อ' : name,
-                      room: t['RoomNumber']?.toString() ?? '-',
-                      phone: t['Phone']?.toString() ?? '-',
-                      onApprove: () => _approveFromList(t as Map),
-                      onReject: () => _rejectFromList(t as Map),
-                    );
-                  }).toList(),
-                ),
-
-              const SizedBox(height: 22),
-
-              // ====== ผู้เช่าทั้งหมด ======
-              const _SectionTitle(title: 'ผู้เช่าทั้งหมด'),
-              const SizedBox(height: 10),
-
-              if (approvedTenants.isEmpty)
-                const NeumorphicCard(
-                  padding: EdgeInsets.all(16),
-                  child: Text('ยังไม่มีผู้เช่าที่อนุมัติแล้ว',
+                  child: Text('ยังไม่มีผู้เช่า',
                       style: TextStyle(color: AppColors.textSecondary)),
                 )
               else
                 NeumorphicCard(
                   padding: const EdgeInsets.all(12),
-                  child: _ApprovedTable(items: approvedTenants),
+                  child: _ApprovedTable(
+                    items: tenants,
+                    onEditDates: (t) => _openEditDates(t),
+                    onEndTenancy: (t) => _confirmEndTenancy(t),
+                  ),
                 ),
             ],
-          );
-        }),
+          ],
+        ),
       ),
     );
   }
 }
-
-/* ===================== Widgets ย่อย ===================== */
 
 class _CenteredProgress extends StatelessWidget {
   const _CenteredProgress();
@@ -372,123 +527,38 @@ class _IllustratedMessage extends StatelessWidget {
   }
 }
 
-class _SectionTitle extends StatelessWidget {
-  final String title;
-  const _SectionTitle({required this.title});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: AppColors.primaryLight,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: const Icon(Icons.people_alt_rounded,
-              color: AppColors.primaryDark, size: 18),
-        ),
-        const SizedBox(width: 10),
-        Text(
-          title,
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
-      ],
-    );
-  }
-}
-
-class _PendingTenantTile extends StatelessWidget {
-  final String name;
-  final String room;
-  final String phone;
-  final VoidCallback onApprove;
-  final VoidCallback onReject;
-
-  const _PendingTenantTile({
-    required this.name,
-    required this.room,
-    required this.phone,
-    required this.onApprove,
-    required this.onReject,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10), // 👈 ใช้ตรงนี้แทน margin
-      child: NeumorphicCard(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: [
-            Container(
-              width: 42,
-              height: 42,
-              decoration: const BoxDecoration(
-                color: AppColors.primaryLight,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.person, color: AppColors.primaryDark),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(name, style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 4),
-                  Text('ห้อง $room • $phone',
-                      style: const TextStyle(color: AppColors.textSecondary)),
-                ],
-              ),
-            ),
-            TextButton.icon(
-              onPressed: onReject,
-              icon: const Icon(Icons.close, color: Colors.red),
-              label: const Text('ปฏิเสธ',
-                  style: TextStyle(
-                      color: Colors.red, fontWeight: FontWeight.w700)),
-            ),
-            const SizedBox(width: 6),
-            ElevatedButton.icon(
-              onPressed: onApprove,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              ),
-              icon: const Icon(Icons.check_circle),
-              label: const Text('อนุมัติ',
-                  style: TextStyle(fontWeight: FontWeight.w800)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _ApprovedTable extends StatelessWidget {
   final List items;
-  const _ApprovedTable({required this.items});
+  final void Function(Map tenant) onEditDates;
+  final void Function(Map tenant) onEndTenancy;
+  const _ApprovedTable({
+    required this.items,
+    required this.onEditDates,
+    required this.onEndTenancy,
+  });
 
-  (String, Color) _roomStatus(dynamic raw) {
+  bool _isActive(dynamic raw) {
+    final s = (raw ?? '').toString().toLowerCase().trim();
+    return s == 'active' || s == 'กำลังเช่า' || s == 'approved';
+  }
+
+  String _fmtDate(dynamic v) {
+    if (v == null) return '-';
+    final d = (v is DateTime) ? v : DateTime.tryParse(v.toString());
+    if (d == null) return '-';
+    return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  }
+
+  (String, Color) _tenantStatus(dynamic raw) {
     final s = (raw ?? '').toString().toLowerCase().trim();
     switch (s) {
-      case 'occupied':
-      case 'ไม่ว่าง':
-      case 'มีผู้เข้าพัก':
-        return ('มีผู้เข้าพัก', Colors.green);
-      case 'vacant':
-      case 'ว่าง':
-        return ('ว่าง', Colors.orange);
-      case 'repair':
-      case 'ซ่อมบำรุง':
-        return ('ซ่อมบำรุง', Colors.redAccent);
+      case 'active':
+      case 'approved':
+      case 'กำลังเช่า':
+        return ('กำลังเช่า', Colors.green);
+      case 'ended':
+      case 'สิ้นสุดการเช่า':
+        return ('สิ้นสุดการเช่า', Colors.redAccent);
       default:
         return (s.isEmpty ? '-' : s, Colors.blueGrey);
     }
@@ -505,28 +575,59 @@ class _ApprovedTable extends StatelessWidget {
             child: DataTable(
               columnSpacing: 20,
               horizontalMargin: 12,
-              headingRowColor:
-                  MaterialStateProperty.all(AppColors.primaryLight),
+              headingRowColor: MaterialStateProperty.all(
+                  AppColors.primary.withOpacity(0.06)),
               columns: const [
-                DataColumn(label: Text('ชื่อ-สกุล')),
                 DataColumn(label: Text('ห้อง')),
+                DataColumn(label: Text('ชื่อ-สกุล')),
                 DataColumn(label: Text('เบอร์โทร')),
                 DataColumn(label: Text('อีเมล')),
-                DataColumn(label: Text('สถานะห้อง')),
+                DataColumn(label: Text('เริ่มเช่า')),
+                DataColumn(label: Text('สิ้นสุด')),
+                DataColumn(label: Text('สถานะผู้เช่า')),
+                DataColumn(label: Text('การจัดการ'))
               ],
               rows: items.map((t) {
-                final name = t['FullName'] ?? '-';
                 final room = t['RoomNumber']?.toString() ?? '-';
+                final name = t['FullName'] ?? '-';
                 final phone = t['Phone'] ?? '-';
                 final email = t['Email'] ?? '-';
-                final (label, color) = _roomStatus(t['Status']);
+
+                final start = _fmtDate(t['Start']);
+                final end =
+                    t['End'] == null ? 'ไม่มีกำหนด' : _fmtDate(t['End']);
+                final (label, color) = _tenantStatus(t['TenantStatus']);
+                final isActive = _isActive(t['TenantStatus']);
+
+                final underline =
+                    const TextStyle(decoration: TextDecoration.underline);
 
                 return DataRow(cells: [
-                  DataCell(Text(name)),
                   DataCell(Text(room)),
+                  DataCell(Text(name)),
                   DataCell(Text(phone)),
                   DataCell(Text(email)),
+                  DataCell(
+                    Text(start, style: underline),
+                    onTap: () => onEditDates(Map<String, dynamic>.from(t)),
+                  ),
+                  DataCell(
+                    Text(end, style: underline),
+                    onTap: () => onEditDates(Map<String, dynamic>.from(t)),
+                  ),
                   DataCell(_StatusChip(label: label, color: color)),
+                  DataCell(
+                    isActive
+                        ? ElevatedButton.icon(
+                            onPressed: () =>
+                                onEndTenancy(Map<String, dynamic>.from(t)),
+                            icon: const Icon(Icons.logout_rounded),
+                            label: const Text('ย้ายออก'),
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.redAccent),
+                          )
+                        : const Text('-'),
+                  ),
                 ]);
               }).toList(),
             ),
